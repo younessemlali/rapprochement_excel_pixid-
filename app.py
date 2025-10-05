@@ -1,4 +1,13 @@
-import streamlit as st
+current_row = 0
+            init_avenant.to_excel(writer, index=False, sheet_name='Types et Avenants', startrow=current_row)
+            ws_types = writer.sheets['Types et Avenants']
+            current_row += len(init_avenant) + 3
+            
+            ws_types.cell(row=current_row, column=1).value = "Détail par type de contrat:"
+            ws_types.cell(row=current_row, column=1).font = Font(bold=True, size=12)
+            current_row += 1
+            types_detail.to_excel(writer, index=False, sheet_name='Types et Avenants', startrow=current_row)
+            current_row += len(types_detail) + 3import streamlit as st
 import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
@@ -158,12 +167,22 @@ def create_comprehensive_excel(df, filename="analyse_complete.xlsx"):
             current_row += len(volume_agence) + 3
             
             # 2. Taux de réussite par agence
-            agence_status = df.groupby(['Code_Unite', 'Statut_Final']).size().unstack(fill_value=0)
-            agence_status['Total'] = agence_status.sum(axis=1)
-            agence_status['OK'] = agence_status.get('OK', 0)
-            agence_status['KO'] = agence_status['Total'] - agence_status['OK']
-            agence_status['Taux réussite (%)'] = round((agence_status['OK'] / agence_status['Total'] * 100), 2)
-            agence_status = agence_status[['Total', 'OK', 'KO', 'Taux réussite (%)']].reset_index()
+            agence_list = []
+            for agence in df['Code_Unite'].unique():
+                df_agence = df[df['Code_Unite'] == agence]
+                total = len(df_agence)
+                ok = (df_agence['Statut_Final'].str.upper() == 'OK').sum()
+                ko = total - ok
+                taux = round((ok / total * 100), 2) if total > 0 else 0
+                agence_list.append({
+                    'Code_Unite': agence,
+                    'Total': total,
+                    'OK': ok,
+                    'KO': ko,
+                    'Taux réussite (%)': taux
+                })
+            
+            agence_status = pd.DataFrame(agence_list)
             agence_status = agence_status.sort_values('KO', ascending=False)
             
             ws_agence.cell(row=current_row, column=1).value = "2. TAUX DE RÉUSSITE PAR AGENCE (Classement par nombre de KO)"
@@ -194,29 +213,38 @@ def create_comprehensive_excel(df, filename="analyse_complete.xlsx"):
             # 4. Agences × Types d'erreurs
             df_ko = df[df['Statut_Final'].str.upper() != 'OK']
             if len(df_ko) > 0:
-                agence_erreur = pd.crosstab(df_ko['Code_Unite'], df_ko['Statut_Final'], margins=True)
-                agence_erreur = agence_erreur.reset_index()
+                try:
+                    agence_erreur = pd.crosstab(df_ko['Code_Unite'], df_ko['Statut_Final'], margins=True)
+                    agence_erreur = agence_erreur.reset_index()
+                    
+                    ws_agence.cell(row=current_row, column=1).value = "4. CROISEMENT AGENCES × TYPES D'ERREURS"
+                    ws_agence.cell(row=current_row, column=1).font = Font(bold=True, size=12)
+                    current_row += 1
+                    
+                    for r_idx, row in enumerate(dataframe_to_rows(agence_erreur, index=False, header=True), current_row):
+                        for c_idx, value in enumerate(row, 1):
+                            ws_agence.cell(row=r_idx, column=c_idx).value = value
+                    current_row += len(agence_erreur) + 3
+                except Exception as e:
+                    # Si le crosstab échoue, on passe
+                    ws_agence.cell(row=current_row, column=1).value = "4. CROISEMENT AGENCES × TYPES D'ERREURS - Données insuffisantes"
+                    current_row += 2
+            
+            # 5. Agences × Types de contrats
+            try:
+                agence_type = pd.crosstab(df['Code_Unite'], df['Type (libellé)'], margins=True)
+                agence_type = agence_type.reset_index()
                 
-                ws_agence.cell(row=current_row, column=1).value = "4. CROISEMENT AGENCES × TYPES D'ERREURS"
+                ws_agence.cell(row=current_row, column=1).value = "5. VOLUME D'INTÉGRATIONS PAR AGENCE ET TYPE DE CONTRAT"
                 ws_agence.cell(row=current_row, column=1).font = Font(bold=True, size=12)
                 current_row += 1
                 
-                for r_idx, row in enumerate(dataframe_to_rows(agence_erreur, index=False, header=True), current_row):
+                for r_idx, row in enumerate(dataframe_to_rows(agence_type, index=False, header=True), current_row):
                     for c_idx, value in enumerate(row, 1):
                         ws_agence.cell(row=r_idx, column=c_idx).value = value
-                current_row += len(agence_erreur) + 3
-            
-            # 5. Agences × Types de contrats
-            agence_type = pd.crosstab(df['Code_Unite'], df['Type (libellé)'], margins=True)
-            agence_type = agence_type.reset_index()
-            
-            ws_agence.cell(row=current_row, column=1).value = "5. VOLUME D'INTÉGRATIONS PAR AGENCE ET TYPE DE CONTRAT"
-            ws_agence.cell(row=current_row, column=1).font = Font(bold=True, size=12)
-            current_row += 1
-            
-            for r_idx, row in enumerate(dataframe_to_rows(agence_type, index=False, header=True), current_row):
-                for c_idx, value in enumerate(row, 1):
-                    ws_agence.cell(row=r_idx, column=c_idx).value = value
+            except Exception as e:
+                # Si le crosstab échoue, on passe
+                ws_agence.cell(row=current_row, column=1).value = "5. VOLUME D'INTÉGRATIONS PAR AGENCE ET TYPE DE CONTRAT - Données insuffisantes"
         
         # ONGLET 4: Contrats OK
         if ok_count > 0:
@@ -337,29 +365,21 @@ def create_comprehensive_excel(df, filename="analyse_complete.xlsx"):
             types_detail['Pourcentage'] = round((types_detail['Nombre'] / total * 100), 2)
             
             if 'Statut_Final' in df.columns:
-                cross_type_status = pd.crosstab(
-                    df['Type (libellé)'],
-                    df['Statut_Final'],
-                    margins=True,
-                    margins_name='Total'
-                ).reset_index()
-            
-            current_row = 0
-            init_avenant.to_excel(writer, index=False, sheet_name='Types et Avenants', startrow=current_row)
-            ws_types = writer.sheets['Types et Avenants']
-            current_row += len(init_avenant) + 3
-            
-            ws_types.cell(row=current_row, column=1).value = "Détail par type de contrat:"
-            ws_types.cell(row=current_row, column=1).font = Font(bold=True, size=12)
-            current_row += 1
-            types_detail.to_excel(writer, index=False, sheet_name='Types et Avenants', startrow=current_row)
-            current_row += len(types_detail) + 3
-            
-            if 'cross_type_status' in locals():
-                ws_types.cell(row=current_row, column=1).value = "Croisement Type × Statut:"
-                ws_types.cell(row=current_row, column=1).font = Font(bold=True, size=12)
-                current_row += 1
-                cross_type_status.to_excel(writer, index=False, sheet_name='Types et Avenants', startrow=current_row)
+                try:
+                    cross_type_status = pd.crosstab(
+                        df['Type (libellé)'],
+                        df['Statut_Final'],
+                        margins=True,
+                        margins_name='Total'
+                    ).reset_index()
+                    
+                    if 'cross_type_status' in locals():
+                        ws_types.cell(row=current_row, column=1).value = "Croisement Type × Statut:"
+                        ws_types.cell(row=current_row, column=1).font = Font(bold=True, size=12)
+                        current_row += 1
+                        cross_type_status.to_excel(writer, index=False, sheet_name='Types et Avenants', startrow=current_row)
+                except Exception as e:
+                    pass  # Si le crosstab échoue, on continue sans
             
             style_worksheet(ws_types, init_avenant)
         
@@ -531,7 +551,7 @@ if uploaded_file is not None:
                             default=None
                         )
                 
-                if st.button("🔍 Appliquer les filtres avancés", use_container_width=True):
+                if st.button("🔍 Appliquer les filtres avancés", width='stretch'):
                     filtered_df = df_clean.copy()
                     
                     if 'statuts_select' in locals() and statuts_select:
@@ -611,21 +631,23 @@ if uploaded_file is not None:
                 
                 # Top agences avec rejets
                 if 'Statut_Final' in df_clean.columns:
-                    agence_status = df_clean.groupby('Code_Unite')['Statut_Final'].apply(
-                        lambda x: pd.Series({
-                            'Total': len(x),
-                            'OK': (x.str.upper() == 'OK').sum(),
-                            'KO': (x.str.upper() != 'OK').sum()
+                    # Créer le DataFrame d'analyse par agence
+                    agence_list = []
+                    for agence in df_clean['Code_Unite'].unique():
+                        df_agence = df_clean[df_clean['Code_Unite'] == agence]
+                        total = len(df_agence)
+                        ok = (df_agence['Statut_Final'].str.upper() == 'OK').sum()
+                        ko = total - ok
+                        taux = round((ok / total * 100), 1) if total > 0 else 0
+                        agence_list.append({
+                            'Code_Unite': agence,
+                            'Total': total,
+                            'OK': ok,
+                            'KO': ko,
+                            'Taux réussite (%)': taux
                         })
-                    ).reset_index()
                     
-                    # Gérer le cas où la colonne OK n'existe pas
-                    if 'OK' not in agence_status.columns:
-                        agence_status['OK'] = 0
-                    if 'KO' not in agence_status.columns:
-                        agence_status['KO'] = 0
-                    
-                    agence_status['Taux réussite (%)'] = round(agence_status['OK'] / agence_status['Total'] * 100, 1)
+                    agence_status = pd.DataFrame(agence_list)
                     agence_status = agence_status.sort_values('KO', ascending=False)
                     
                     st.markdown("#### 🔴 Top 10 agences avec le plus de rejets")
@@ -665,13 +687,16 @@ if uploaded_file is not None:
             if 'Code_Unite' in df_clean.columns and 'Statut_Final' in df_clean.columns and ko_count > 0:
                 st.markdown("### 🔀 Croisement Agences × Types d'erreurs")
                 df_ko_only = df_clean[df_clean['Statut_Final'].str.upper() != 'OK']
-                cross_agence_erreur = pd.crosstab(
-                    df_ko_only['Code_Unite'],
-                    df_ko_only['Statut_Final'],
-                    margins=True,
-                    margins_name='Total'
-                )
-                st.dataframe(cross_agence_erreur, width='stretch')
+                try:
+                    cross_agence_erreur = pd.crosstab(
+                        df_ko_only['Code_Unite'],
+                        df_ko_only['Statut_Final'],
+                        margins=True,
+                        margins_name='Total'
+                    )
+                    st.dataframe(cross_agence_erreur, width='stretch')
+                except Exception as e:
+                    st.warning("Impossible de générer le croisement - données insuffisantes")
         
         # TAB 3: Visualisations
         with tab4:
@@ -838,7 +863,7 @@ if uploaded_file is not None:
                 data=excel_file,
                 file_name=f"analyse_complete_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx",
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                use_container_width=True
+                width='stretch'
             )
             
             st.success("✅ Fichier Excel avec 7 onglets d'analyse prêt au téléchargement !")
