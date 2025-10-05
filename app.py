@@ -36,6 +36,179 @@ def clean_data(df):
     
     return df
 
+# Fonction de parsing de langage naturel
+def parse_natural_language_query(query, df):
+    """Parse une requête en langage naturel et extrait les filtres"""
+    filters = {}
+    query_lower = query.lower()
+    
+    # Détecter les statuts
+    if any(word in query_lower for word in ['ko', 'échec', 'erreur', 'rejet', 'échoué']):
+        filters['statut'] = 'KO'
+    elif any(word in query_lower for word in ['ok', 'réussi', 'succès', 'validé']):
+        filters['statut'] = 'OK'
+    
+    # Détecter les agences (Code_Unite)
+    if 'Code_Unite' in df.columns:
+        agences = df['Code_Unite'].unique()
+        for agence in agences:
+            if str(agence).lower() in query_lower:
+                filters['agence'] = agence
+                break
+    
+    # Détecter les mois
+    mois_map = {
+        'janvier': 1, 'jan': 1,
+        'février': 2, 'fevrier': 2, 'fév': 2, 'fev': 2,
+        'mars': 3, 'mar': 3,
+        'avril': 4, 'avr': 4,
+        'mai': 5,
+        'juin': 6,
+        'juillet': 7, 'juil': 7,
+        'août': 8, 'aout': 8,
+        'septembre': 9, 'sept': 9, 'sep': 9,
+        'octobre': 10, 'oct': 10,
+        'novembre': 11, 'nov': 11,
+        'décembre': 12, 'decembre': 12, 'déc': 12, 'dec': 12
+    }
+    
+    for nom_mois, num_mois in mois_map.items():
+        if nom_mois in query_lower:
+            filters['mois'] = num_mois
+            break
+    
+    # Détecter Initial/Avenant
+    if any(word in query_lower for word in ['initial', 'initiaux']):
+        filters['init_avenant'] = 'Initial'
+    elif any(word in query_lower for word in ['avenant', 'avenants']):
+        filters['init_avenant'] = 'Avenant'
+    
+    # Détecter les types de contrats
+    if 'Type (libellé)' in df.columns:
+        types = df['Type (libellé)'].unique()
+        for type_contrat in types:
+            if str(type_contrat).lower() in query_lower:
+                filters['type'] = type_contrat
+                break
+    
+    return filters
+
+# Fonction de recherche floue
+def fuzzy_search(query, df, column, limit=10):
+    """Recherche floue dans une colonne spécifique"""
+    if column not in df.columns:
+        return []
+    
+    # Extraire les valeurs uniques non vides
+    values = df[column].dropna().astype(str).unique().tolist()
+    values = [v for v in values if v.strip()]
+    
+    if not values or not query.strip():
+        return []
+    
+    # Recherche floue
+    matches = process.extract(query, values, limit=limit, scorer=fuzz.token_sort_ratio)
+    
+    # Retourner les résultats avec leur score
+    return [(match[0], match[1]) for match in matches if match[1] > 50]  # Score minimum 50
+
+# Fonction pour calculer le score de pertinence
+def calculate_relevance_score(row, query, filters):
+    """Calcule un score de pertinence pour chaque ligne"""
+    score = 0
+    query_lower = query.lower()
+    
+    # Score basé sur le contrat
+    if 'Contrat' in row.index:
+        contrat_str = str(row['Contrat']).lower()
+        if query_lower in contrat_str:
+            score += 100  # Correspondance exacte
+        else:
+            score += fuzz.partial_ratio(query_lower, contrat_str) * 0.5  # Correspondance partielle
+    
+    # Score basé sur les filtres détectés
+    if filters.get('agence') and 'Code_Unite' in row.index:
+        if row['Code_Unite'] == filters['agence']:
+            score += 50
+    
+    if filters.get('statut') and 'Statut_Final' in row.index:
+        if filters['statut'] == 'KO' and row['Statut_Final'].upper() != 'OK':
+            score += 50
+        elif filters['statut'] == 'OK' and row['Statut_Final'].upper() == 'OK':
+            score += 50
+    
+    if filters.get('type') and 'Type (libellé)' in row.index:
+        if row['Type (libellé)'] == filters['type']:
+            score += 40
+    
+    if filters.get('init_avenant') and 'Initial/Avenant' in row.index:
+        if filters['init_avenant'].lower() in str(row['Initial/Avenant']).lower():
+            score += 30
+    
+    if filters.get('mois') and 'Date_Integration' in row.index:
+        try:
+            date = pd.to_datetime(row['Date_Integration'])
+            if date.month == filters['mois']:
+                score += 40
+        except:
+            pass
+    
+    return score
+
+# Fonction pour obtenir des suggestions intelligentes
+def get_smart_suggestions(partial_input, df, limit=5):
+    """Génère des suggestions intelligentes basées sur l'entrée partielle"""
+    suggestions = []
+    
+    if not partial_input or len(partial_input) < 2:
+        return suggestions
+    
+    partial_lower = partial_input.lower()
+    
+    # Suggestions de contrats
+    if 'Contrat' in df.columns:
+        contrats = df['Contrat'].dropna().astype(str)
+        contrats_matches = contrats[contrats.str.contains(partial_input, case=False, na=False)].head(limit)
+        for contrat in contrats_matches:
+            suggestions.append({
+                'type': '📄 Contrat',
+                'value': contrat,
+                'score': fuzz.partial_ratio(partial_lower, contrat.lower())
+            })
+    
+    # Suggestions d'agences
+    if 'Code_Unite' in df.columns:
+        agences = df['Code_Unite'].dropna().astype(str).unique()
+        for agence in agences:
+            if partial_lower in agence.lower():
+                suggestions.append({
+                    'type': '🏢 Agence',
+                    'value': agence,
+                    'score': fuzz.ratio(partial_lower, agence.lower())
+                })
+    
+    # Suggestions de statuts
+    if any(word in partial_lower for word in ['k', 'o', 'ko', 'ok']):
+        if 'ko' in partial_lower or 'k' == partial_lower:
+            suggestions.append({'type': '❌ Statut', 'value': 'KO', 'score': 100})
+        if 'ok' in partial_lower or 'o' == partial_lower:
+            suggestions.append({'type': '✅ Statut', 'value': 'OK', 'score': 100})
+    
+    # Suggestions de mois
+    mois_suggestions = {
+        'jan': 'janvier', 'fev': 'février', 'mar': 'mars', 'avr': 'avril',
+        'mai': 'mai', 'juin': 'juin', 'juil': 'juillet', 'aout': 'août',
+        'sept': 'septembre', 'oct': 'octobre', 'nov': 'novembre', 'dec': 'décembre'
+    }
+    for abbr, mois in mois_suggestions.items():
+        if abbr.startswith(partial_lower) or mois.startswith(partial_lower):
+            suggestions.append({'type': '📅 Mois', 'value': mois, 'score': 90})
+    
+    # Trier par score et limiter
+    suggestions = sorted(suggestions, key=lambda x: x['score'], reverse=True)[:limit]
+    
+    return suggestions
+
 # Fonction pour styliser une feuille Excel
 def style_worksheet(worksheet, df):
     """Applique un style professionnel à une feuille Excel"""
@@ -458,69 +631,231 @@ if uploaded_file is not None:
         
         # TAB 0: Recherche intelligente de contrats
         with tab1:
-            st.subheader("🔍 Recherche intelligente de contrats")
-            st.markdown("Recherchez des contrats par numéro, agence, statut, type ou tout autre critère")
+            st.subheader("🔍 Recherche Hybride Intelligente")
+            st.markdown("Recherchez en langage naturel ou par correspondance floue")
             
-            col1, col2, col3 = st.columns(3)
+            # Initialiser l'historique de recherche dans session_state
+            if 'search_history' not in st.session_state:
+                st.session_state['search_history'] = []
+            
+            # Zone de recherche principale
+            col1, col2 = st.columns([4, 1])
             
             with col1:
-                search_column = st.selectbox(
-                    "Rechercher dans la colonne:",
-                    options=df_clean.columns.tolist(),
-                    index=df_clean.columns.tolist().index('Contrat') if 'Contrat' in df_clean.columns else 0
+                search_query = st.text_input(
+                    "🔎 Recherche intelligente",
+                    placeholder="Ex: contrats ko nvm septembre, ou 001-NVM-173, ou agence 169 initial...",
+                    help="Tapez en langage naturel ou une partie d'un numéro de contrat"
                 )
             
             with col2:
-                search_value = st.text_input("Valeur recherchée:", placeholder="Ex: 001-NVM-173169")
+                search_mode = st.selectbox(
+                    "Mode",
+                    ["🧠 Hybride", "🎯 Exact", "🔤 Flou"],
+                    help="Hybride: Combine tous les modes | Exact: Correspondance exacte | Flou: Tolère les fautes"
+                )
             
-            with col3:
-                search_type = st.radio("Type de recherche:", ["Contient", "Égal à", "Commence par"], horizontal=True)
+            # Afficher des suggestions en temps réel
+            if search_query and len(search_query) >= 2:
+                suggestions = get_smart_suggestions(search_query, df_clean, limit=5)
+                if suggestions:
+                    with st.expander("💡 Suggestions", expanded=True):
+                        cols = st.columns(len(suggestions))
+                        for idx, sugg in enumerate(suggestions):
+                            with cols[idx]:
+                                if st.button(f"{sugg['type']}: {sugg['value']}", key=f"sugg_{idx}"):
+                                    search_query = sugg['value']
+                                st.caption(f"Score: {sugg['score']}%")
             
-            if search_value:
-                if search_type == "Contient":
-                    mask = df_clean[search_column].astype(str).str.contains(search_value, case=False, na=False)
-                elif search_type == "Égal à":
-                    mask = df_clean[search_column].astype(str).str.upper() == search_value.upper()
-                else:  # Commence par
-                    mask = df_clean[search_column].astype(str).str.startswith(search_value, na=False)
+            # Bouton de recherche
+            if st.button("🔍 RECHERCHER", type="primary", use_container_width=True) or search_query:
                 
-                results = df_clean[mask]
-                
-                st.markdown(f"### Résultats de la recherche: **{len(results)}** contrat(s) trouvé(s)")
-                
-                if len(results) > 0:
-                    st.dataframe(results, width='stretch', height=400)
+                if search_query:
+                    # Ajouter à l'historique
+                    if search_query not in st.session_state['search_history']:
+                        st.session_state['search_history'].insert(0, search_query)
+                        st.session_state['search_history'] = st.session_state['search_history'][:10]  # Garder les 10 dernières
                     
-                    # Bouton pour exporter les résultats
-                    csv = results.to_csv(index=False).encode('utf-8')
-                    st.download_button(
-                        label="📥 Télécharger les résultats (CSV)",
-                        data=csv,
-                        file_name=f"recherche_{search_value}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
-                        mime="text/csv"
-                    )
-                    
-                    # Statistiques rapides sur les résultats
-                    if len(results) > 1:
-                        st.markdown("#### Statistiques sur les résultats")
-                        col1, col2, col3 = st.columns(3)
+                    with st.spinner("🔎 Recherche en cours..."):
+                        results = df_clean.copy()
                         
-                        if 'Statut_Final' in results.columns:
+                        if search_mode == "🧠 Hybride":
+                            # 1. Parser le langage naturel
+                            filters = parse_natural_language_query(search_query, df_clean)
+                            
+                            # Afficher les filtres détectés
+                            if filters:
+                                st.info(f"🧠 Filtres détectés: {', '.join([f'{k}: {v}' for k, v in filters.items()])}")
+                            
+                            # 2. Appliquer les filtres
+                            if filters.get('statut'):
+                                if filters['statut'] == 'KO':
+                                    results = results[results['Statut_Final'].str.upper() != 'OK']
+                                else:
+                                    results = results[results['Statut_Final'].str.upper() == 'OK']
+                            
+                            if filters.get('agence'):
+                                results = results[results['Code_Unite'] == filters['agence']]
+                            
+                            if filters.get('type'):
+                                results = results[results['Type (libellé)'] == filters['type']]
+                            
+                            if filters.get('init_avenant'):
+                                results = results[results['Initial/Avenant'].str.contains(filters['init_avenant'], case=False, na=False)]
+                            
+                            if filters.get('mois') and 'Date_Integration' in results.columns:
+                                results['Date_Integration'] = pd.to_datetime(results['Date_Integration'], errors='coerce')
+                                results = results[results['Date_Integration'].dt.month == filters['mois']]
+                            
+                            # 3. Calculer les scores de pertinence
+                            results['_score'] = results.apply(
+                                lambda row: calculate_relevance_score(row, search_query, filters),
+                                axis=1
+                            )
+                            
+                            # 4. Filtrer les résultats avec score > 0 et trier
+                            results = results[results['_score'] > 0].sort_values('_score', ascending=False)
+                        
+                        elif search_mode == "🎯 Exact":
+                            # Recherche exacte dans toutes les colonnes
+                            mask = pd.Series([False] * len(results))
+                            for col in results.columns:
+                                mask = mask | results[col].astype(str).str.contains(search_query, case=False, na=False)
+                            results = results[mask]
+                            results['_score'] = 100
+                        
+                        elif search_mode == "🔤 Flou":
+                            # Recherche floue sur le champ Contrat
+                            if 'Contrat' in results.columns:
+                                fuzzy_matches = fuzzy_search(search_query, results, 'Contrat', limit=50)
+                                if fuzzy_matches:
+                                    matched_values = [match[0] for match in fuzzy_matches]
+                                    results = results[results['Contrat'].isin(matched_values)]
+                                    
+                                    # Ajouter les scores
+                                    score_dict = {match[0]: match[1] for match in fuzzy_matches}
+                                    results['_score'] = results['Contrat'].map(score_dict)
+                                    results = results.sort_values('_score', ascending=False)
+                                else:
+                                    results = pd.DataFrame()
+                            else:
+                                st.warning("Colonne 'Contrat' non trouvée pour la recherche floue")
+                                results = pd.DataFrame()
+                        
+                        # Afficher les résultats
+                        if len(results) > 0:
+                            st.success(f"✅ {len(results)} résultat(s) trouvé(s)")
+                            
+                            # Afficher les scores si disponibles
+                            if '_score' in results.columns:
+                                col1, col2, col3 = st.columns(3)
+                                with col1:
+                                    st.metric("Score moyen", f"{results['_score'].mean():.1f}%")
+                                with col2:
+                                    st.metric("Meilleur score", f"{results['_score'].max():.1f}%")
+                                with col3:
+                                    st.metric("Score minimum", f"{results['_score'].min():.1f}%")
+                            
+                            # Afficher les résultats avec scores
+                            display_results = results.copy()
+                            if '_score' in display_results.columns:
+                                # Déplacer la colonne score au début
+                                cols = ['_score'] + [col for col in display_results.columns if col != '_score']
+                                display_results = display_results[cols]
+                                display_results = display_results.rename(columns={'_score': '🎯 Score'})
+                            
+                            st.dataframe(display_results, width='stretch', height=400)
+                            
+                            # Boutons d'export
+                            col1, col2 = st.columns(2)
                             with col1:
-                                ok_res = len(results[results['Statut_Final'].str.upper() == 'OK'])
-                                st.metric("OK", ok_res, delta=f"{round(ok_res/len(results)*100, 1)}%")
-                        
-                        if 'Code_Unite' in results.columns:
+                                csv = results.to_csv(index=False).encode('utf-8')
+                                st.download_button(
+                                    label="📥 Télécharger CSV",
+                                    data=csv,
+                                    file_name=f"recherche_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
+                                    mime="text/csv",
+                                    use_container_width=True
+                                )
+                            
                             with col2:
-                                st.metric("Agences", results['Code_Unite'].nunique())
+                                # Exporter en Excel
+                                output = io.BytesIO()
+                                with pd.ExcelWriter(output, engine='openpyxl') as writer:
+                                    results.to_excel(writer, index=False, sheet_name='Résultats')
+                                output.seek(0)
+                                
+                                st.download_button(
+                                    label="📥 Télécharger Excel",
+                                    data=output,
+                                    file_name=f"recherche_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx",
+                                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                                    use_container_width=True
+                                )
+                            
+                            # Statistiques sur les résultats
+                            if len(results) > 1:
+                                st.markdown("### 📊 Statistiques sur les résultats")
+                                col1, col2, col3, col4 = st.columns(4)
+                                
+                                with col1:
+                                    if 'Statut_Final' in results.columns:
+                                        ok_res = len(results[results['Statut_Final'].str.upper() == 'OK'])
+                                        st.metric("✅ OK", ok_res, delta=f"{round(ok_res/len(results)*100, 1)}%")
+                                
+                                with col2:
+                                    if 'Statut_Final' in results.columns:
+                                        ko_res = len(results[results['Statut_Final'].str.upper() != 'OK'])
+                                        st.metric("❌ KO", ko_res, delta=f"{round(ko_res/len(results)*100, 1)}%")
+                                
+                                with col3:
+                                    if 'Code_Unite' in results.columns:
+                                        st.metric("🏢 Agences", results['Code_Unite'].nunique())
+                                
+                                with col4:
+                                    if 'Type (libellé)' in results.columns:
+                                        st.metric("📋 Types", results['Type (libellé)'].nunique())
                         
-                        if 'Type (libellé)' in results.columns:
-                            with col3:
-                                st.metric("Types", results['Type (libellé)'].nunique())
-                else:
-                    st.warning(f"Aucun résultat trouvé pour '{search_value}' dans la colonne '{search_column}'")
+                        else:
+                            st.warning(f"❌ Aucun résultat trouvé pour '{search_query}'")
+                            st.info("💡 Essayez : \n- Des mots-clés différents\n- Le mode 'Flou' pour plus de tolérance\n- Une recherche plus générale")
             
-            # Recherche avancée
+            # Historique de recherche
+            if st.session_state['search_history']:
+                with st.expander("📜 Historique des recherches"):
+                    st.markdown("Cliquez pour relancer une recherche précédente")
+                    cols = st.columns(min(len(st.session_state['search_history']), 5))
+                    for idx, hist_query in enumerate(st.session_state['search_history'][:5]):
+                        with cols[idx]:
+                            if st.button(f"🔄 {hist_query}", key=f"hist_{idx}"):
+                                search_query = hist_query
+            
+            # Aide et exemples
+            with st.expander("❓ Aide et exemples de recherche"):
+                st.markdown("""
+                ### 🧠 Mode Hybride (Recommandé)
+                Combine recherche floue + langage naturel
+                
+                **Exemples de requêtes :**
+                - `contrats ko nvm septembre` → Trouve les contrats KO de l'agence NVM en septembre
+                - `agence 169 initial août` → Contrats initiaux de l'agence 169 en août
+                - `avenant ok octobre` → Avenants validés en octobre
+                - `001-NVM-173` → Trouve le contrat même avec fautes de frappe
+                - `erreur nvm` → Tous les contrats KO de NVM
+                
+                ### 🎯 Mode Exact
+                Recherche une correspondance exacte dans toutes les colonnes
+                
+                ### 🔤 Mode Flou
+                Tolère les fautes de frappe et trouve des correspondances approximatives
+                
+                **Astuces :**
+                - Utilisez des mots-clés simples
+                - Combinez agence + statut + mois pour affiner
+                - Le score indique la pertinence (100% = parfait)
+                """)
+            
+            # Recherche avancée (ancien système en fallback)
             with st.expander("🎯 Recherche avancée (filtres multiples)", expanded=False):
                 st.markdown("Combinez plusieurs critères pour affiner votre recherche")
                 
