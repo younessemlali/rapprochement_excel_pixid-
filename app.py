@@ -416,7 +416,7 @@ if uploaded_file is not None:
         df = pd.read_excel(uploaded_file)
         
         with st.expander("👁️ Aperçu des données brutes", expanded=False):
-            st.dataframe(df.head(10), use_container_width=True)
+            st.dataframe(df.head(10), width='stretch')
         
         df_clean = clean_data(df)
         
@@ -464,7 +464,7 @@ if uploaded_file is not None:
                 st.markdown(f"### Résultats de la recherche: **{len(results)}** contrat(s) trouvé(s)")
                 
                 if len(results) > 0:
-                    st.dataframe(results, use_container_width=True, height=400)
+                    st.dataframe(results, width='stretch', height=400)
                     
                     # Bouton pour exporter les résultats
                     csv = results.to_csv(index=False).encode('utf-8')
@@ -547,7 +547,7 @@ if uploaded_file is not None:
                         filtered_df = filtered_df[filtered_df['Initial/Avenant'].isin(init_avenant_select)]
                     
                     st.success(f"✅ {len(filtered_df)} contrats correspondent aux critères")
-                    st.dataframe(filtered_df, use_container_width=True, height=400)
+                    st.dataframe(filtered_df, width='stretch', height=400)
                     
                     # Export des résultats filtrés
                     csv_filtered = filtered_df.to_csv(index=False).encode('utf-8')
@@ -561,7 +561,7 @@ if uploaded_file is not None:
         # TAB 1: Données nettoyées
         with tab2:
             st.subheader("Données nettoyées et formatées")
-            st.dataframe(df_clean, use_container_width=True, height=400)
+            st.dataframe(df_clean, width='stretch', height=400)
             
             col1, col2, col3, col4 = st.columns(4)
             with col1:
@@ -603,7 +603,7 @@ if uploaded_file is not None:
                     error_types = df_ko['Statut_Final'].value_counts().reset_index()
                     error_types.columns = ['Type d\'erreur', 'Nombre']
                     error_types['%'] = round(error_types['Nombre'] / ko_count * 100, 1)
-                    st.dataframe(error_types, use_container_width=True, hide_index=True)
+                    st.dataframe(error_types, width='stretch', hide_index=True)
             
             # Analyse par agence (Code_Unite)
             if 'Code_Unite' in df_clean.columns:
@@ -618,23 +618,30 @@ if uploaded_file is not None:
                             'KO': (x.str.upper() != 'OK').sum()
                         })
                     ).reset_index()
+                    
+                    # Gérer le cas où la colonne OK n'existe pas
+                    if 'OK' not in agence_status.columns:
+                        agence_status['OK'] = 0
+                    if 'KO' not in agence_status.columns:
+                        agence_status['KO'] = 0
+                    
                     agence_status['Taux réussite (%)'] = round(agence_status['OK'] / agence_status['Total'] * 100, 1)
                     agence_status = agence_status.sort_values('KO', ascending=False)
                     
                     st.markdown("#### 🔴 Top 10 agences avec le plus de rejets")
                     top_rejets = agence_status.head(10)
-                    st.dataframe(top_rejets, use_container_width=True, hide_index=True)
+                    st.dataframe(top_rejets, width='stretch', hide_index=True)
                     
                     st.markdown("#### ✅ Top 10 agences avec le meilleur taux de réussite")
                     top_reussite = agence_status.sort_values('Taux réussite (%)', ascending=False).head(10)
-                    st.dataframe(top_reussite, use_container_width=True, hide_index=True)
+                    st.dataframe(top_reussite, width='stretch', hide_index=True)
                 
                 # Volume par agence
                 st.markdown("#### 📊 Volume d'intégrations par agence")
                 volume_agence = df_clean['Code_Unite'].value_counts().reset_index()
                 volume_agence.columns = ['Agence', 'Nombre']
                 volume_agence['%'] = round(volume_agence['Nombre'] / len(df_clean) * 100, 1)
-                st.dataframe(volume_agence, use_container_width=True, hide_index=True)
+                st.dataframe(volume_agence, width='stretch', hide_index=True)
             
             # Analyse Initial/Avenant
             if 'Initial/Avenant' in df_clean.columns:
@@ -652,7 +659,7 @@ if uploaded_file is not None:
                 types_count = df_clean['Type (libellé)'].value_counts().reset_index()
                 types_count.columns = ['Type', 'Nombre']
                 types_count['%'] = round(types_count['Nombre'] / len(df_clean) * 100, 1)
-                st.dataframe(types_count, use_container_width=True, hide_index=True)
+                st.dataframe(types_count, width='stretch', hide_index=True)
             
             # Croisement Agences × Types d'erreurs
             if 'Code_Unite' in df_clean.columns and 'Statut_Final' in df_clean.columns and ko_count > 0:
@@ -664,7 +671,7 @@ if uploaded_file is not None:
                     margins=True,
                     margins_name='Total'
                 )
-                st.dataframe(cross_agence_erreur, use_container_width=True)
+                st.dataframe(cross_agence_erreur, width='stretch')
         
         # TAB 3: Visualisations
         with tab4:
@@ -685,7 +692,7 @@ if uploaded_file is not None:
                         hole=0.4,
                         color_discrete_map={'OK': '#28a745', 'KO': '#dc3545'}
                     )
-                    st.plotly_chart(fig, use_container_width=True)
+                    st.plotly_chart(fig, width='stretch')
             
             # Graphique types
             if 'Type (libellé)' in df_clean.columns:
@@ -749,6 +756,7 @@ if uploaded_file is not None:
                 df_temp = df_clean.copy()
                 df_temp['Date_Integration'] = pd.to_datetime(df_temp['Date_Integration'], errors='coerce')
                 df_temp = df_temp.dropna(subset=['Date_Integration'])
+                df_temp = df_temp.copy()  # Créer une vraie copie pour éviter le warning
                 df_temp['Date'] = df_temp['Date_Integration'].dt.date
                 timeline = df_temp.groupby('Date').size().reset_index(name='Nombre')
                 
