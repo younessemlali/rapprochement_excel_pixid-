@@ -1,13 +1,4 @@
-current_row = 0
-            init_avenant.to_excel(writer, index=False, sheet_name='Types et Avenants', startrow=current_row)
-            ws_types = writer.sheets['Types et Avenants']
-            current_row += len(init_avenant) + 3
-            
-            ws_types.cell(row=current_row, column=1).value = "Détail par type de contrat:"
-            ws_types.cell(row=current_row, column=1).font = Font(bold=True, size=12)
-            current_row += 1
-            types_detail.to_excel(writer, index=False, sheet_name='Types et Avenants', startrow=current_row)
-            current_row += len(types_detail) + 3import streamlit as st
+import streamlit as st
 import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
@@ -170,16 +161,16 @@ def create_comprehensive_excel(df, filename="analyse_complete.xlsx"):
             agence_list = []
             for agence in df['Code_Unite'].unique():
                 df_agence = df[df['Code_Unite'] == agence]
-                total = len(df_agence)
-                ok = (df_agence['Statut_Final'].str.upper() == 'OK').sum()
-                ko = total - ok
-                taux = round((ok / total * 100), 2) if total > 0 else 0
+                total_ag = len(df_agence)
+                ok_ag = (df_agence['Statut_Final'].str.upper() == 'OK').sum()
+                ko_ag = total_ag - ok_ag
+                taux_ag = round((ok_ag / total_ag * 100), 2) if total_ag > 0 else 0
                 agence_list.append({
                     'Code_Unite': agence,
-                    'Total': total,
-                    'OK': ok,
-                    'KO': ko,
-                    'Taux réussite (%)': taux
+                    'Total': total_ag,
+                    'OK': ok_ag,
+                    'KO': ko_ag,
+                    'Taux réussite (%)': taux_ag
                 })
             
             agence_status = pd.DataFrame(agence_list)
@@ -364,6 +355,7 @@ def create_comprehensive_excel(df, filename="analyse_complete.xlsx"):
             types_detail.columns = ['Type de contrat', 'Nombre']
             types_detail['Pourcentage'] = round((types_detail['Nombre'] / total * 100), 2)
             
+            cross_type_status = None
             if 'Statut_Final' in df.columns:
                 try:
                     cross_type_status = pd.crosstab(
@@ -372,14 +364,25 @@ def create_comprehensive_excel(df, filename="analyse_complete.xlsx"):
                         margins=True,
                         margins_name='Total'
                     ).reset_index()
-                    
-                    if 'cross_type_status' in locals():
-                        ws_types.cell(row=current_row, column=1).value = "Croisement Type × Statut:"
-                        ws_types.cell(row=current_row, column=1).font = Font(bold=True, size=12)
-                        current_row += 1
-                        cross_type_status.to_excel(writer, index=False, sheet_name='Types et Avenants', startrow=current_row)
-                except Exception as e:
-                    pass  # Si le crosstab échoue, on continue sans
+                except Exception:
+                    pass
+            
+            current_row = 0
+            init_avenant.to_excel(writer, index=False, sheet_name='Types et Avenants', startrow=current_row)
+            ws_types = writer.sheets['Types et Avenants']
+            current_row += len(init_avenant) + 3
+            
+            ws_types.cell(row=current_row, column=1).value = "Détail par type de contrat:"
+            ws_types.cell(row=current_row, column=1).font = Font(bold=True, size=12)
+            current_row += 1
+            types_detail.to_excel(writer, index=False, sheet_name='Types et Avenants', startrow=current_row)
+            current_row += len(types_detail) + 3
+            
+            if cross_type_status is not None:
+                ws_types.cell(row=current_row, column=1).value = "Croisement Type × Statut:"
+                ws_types.cell(row=current_row, column=1).font = Font(bold=True, size=12)
+                current_row += 1
+                cross_type_status.to_excel(writer, index=False, sheet_name='Types et Avenants', startrow=current_row)
             
             style_worksheet(ws_types, init_avenant)
         
@@ -635,16 +638,16 @@ if uploaded_file is not None:
                     agence_list = []
                     for agence in df_clean['Code_Unite'].unique():
                         df_agence = df_clean[df_clean['Code_Unite'] == agence]
-                        total = len(df_agence)
-                        ok = (df_agence['Statut_Final'].str.upper() == 'OK').sum()
-                        ko = total - ok
-                        taux = round((ok / total * 100), 1) if total > 0 else 0
+                        total_ag = len(df_agence)
+                        ok_ag = (df_agence['Statut_Final'].str.upper() == 'OK').sum()
+                        ko_ag = total_ag - ok_ag
+                        taux_ag = round((ok_ag / total_ag * 100), 1) if total_ag > 0 else 0
                         agence_list.append({
                             'Code_Unite': agence,
-                            'Total': total,
-                            'OK': ok,
-                            'KO': ko,
-                            'Taux réussite (%)': taux
+                            'Total': total_ag,
+                            'OK': ok_ag,
+                            'KO': ko_ag,
+                            'Taux réussite (%)': taux_ag
                         })
                     
                     agence_status = pd.DataFrame(agence_list)
@@ -733,7 +736,7 @@ if uploaded_file is not None:
                         color_continuous_scale='Blues'
                     )
                     fig.update_layout(showlegend=False)
-                    st.plotly_chart(fig, use_container_width=True)
+                    st.plotly_chart(fig, width='stretch')
             
             # Graphiques par agence
             if 'Code_Unite' in df_clean.columns:
@@ -754,7 +757,7 @@ if uploaded_file is not None:
                         color_continuous_scale='Viridis'
                     )
                     fig.update_layout(showlegend=False, yaxis={'categoryorder':'total ascending'})
-                    st.plotly_chart(fig, use_container_width=True)
+                    st.plotly_chart(fig, width='stretch')
                 
                 with col2:
                     # Taux de réussite par agence
@@ -773,7 +776,7 @@ if uploaded_file is not None:
                             color_continuous_scale='RdYlGn'
                         )
                         fig.update_layout(showlegend=False, yaxis={'categoryorder':'total ascending'})
-                        st.plotly_chart(fig, use_container_width=True)
+                        st.plotly_chart(fig, width='stretch')
             
             # Évolution temporelle
             if 'Date_Integration' in df_clean.columns:
@@ -792,38 +795,44 @@ if uploaded_file is not None:
                     title="Volume de contrats par jour",
                     markers=True
                 )
-                st.plotly_chart(fig, use_container_width=True)
+                st.plotly_chart(fig, width='stretch')
             
             # Analyse croisée Type × Statut
             if 'Type (libellé)' in df_clean.columns and 'Statut_Final' in df_clean.columns:
                 st.markdown("#### 🔀 Analyse croisée Type × Statut")
-                cross_data = pd.crosstab(df_clean['Type (libellé)'], df_clean['Statut_Final'])
-                fig = px.bar(
-                    cross_data,
-                    barmode='group',
-                    title="Répartition des statuts par type de contrat"
-                )
-                st.plotly_chart(fig, use_container_width=True)
+                try:
+                    cross_data = pd.crosstab(df_clean['Type (libellé)'], df_clean['Statut_Final'])
+                    fig = px.bar(
+                        cross_data,
+                        barmode='group',
+                        title="Répartition des statuts par type de contrat"
+                    )
+                    st.plotly_chart(fig, width='stretch')
+                except Exception as e:
+                    st.warning("Impossible de générer le graphique croisé - données insuffisantes")
             
             # Heatmap Agences × Types d'erreurs
             if 'Code_Unite' in df_clean.columns and 'Statut_Final' in df_clean.columns and ko_count > 0:
                 st.markdown("#### 🔥 Heatmap : Agences × Types d'erreurs")
-                df_ko_heat = df_clean[df_clean['Statut_Final'].str.upper() != 'OK']
-                
-                # Limiter aux top agences pour la lisibilité
-                top_agences_ko = df_ko_heat['Code_Unite'].value_counts().head(10).index
-                df_ko_heat = df_ko_heat[df_ko_heat['Code_Unite'].isin(top_agences_ko)]
-                
-                heatmap_data = pd.crosstab(df_ko_heat['Code_Unite'], df_ko_heat['Statut_Final'])
-                
-                fig = px.imshow(
-                    heatmap_data,
-                    labels=dict(x="Type d'erreur", y="Agence", color="Nombre"),
-                    title="Concentration des erreurs par agence (Top 10)",
-                    color_continuous_scale='Reds',
-                    aspect="auto"
-                )
-                st.plotly_chart(fig, use_container_width=True)
+                try:
+                    df_ko_heat = df_clean[df_clean['Statut_Final'].str.upper() != 'OK']
+                    
+                    # Limiter aux top agences pour la lisibilité
+                    top_agences_ko = df_ko_heat['Code_Unite'].value_counts().head(10).index
+                    df_ko_heat = df_ko_heat[df_ko_heat['Code_Unite'].isin(top_agences_ko)]
+                    
+                    heatmap_data = pd.crosstab(df_ko_heat['Code_Unite'], df_ko_heat['Statut_Final'])
+                    
+                    fig = px.imshow(
+                        heatmap_data,
+                        labels=dict(x="Type d'erreur", y="Agence", color="Nombre"),
+                        title="Concentration des erreurs par agence (Top 10)",
+                        color_continuous_scale='Reds',
+                        aspect="auto"
+                    )
+                    st.plotly_chart(fig, width='stretch')
+                except Exception as e:
+                    st.warning("Impossible de générer la heatmap - données insuffisantes")
         
         # TAB 4: Export multi-onglets
         with tab5:
@@ -834,26 +843,11 @@ if uploaded_file is not None:
             
             1. **Données nettoyées** - Toutes vos données formatées et nettoyées
             2. **Vue d'ensemble** - Métriques clés et statistiques générales
-            3. **🆕 Analyse par agence** - Analyses complètes des performances par Code_Unite :
-               - Volume total par agence
-               - Taux de réussite par agence (classé par rejets)
-               - Top 10 agences avec le plus de rejets
-               - Croisement Agences × Types d'erreurs
-               - Volume d'intégrations par agence et type de contrat
+            3. **🆕 Analyse par agence** - Analyses complètes des performances par Code_Unite
             4. **Contrats OK** - Analyse détaillée des contrats réussis par type et agence
             5. **Contrats KO** - Analyse des erreurs avec messages détaillés + rejets par agence
             6. **Types et Avenants** - Répartition des types de contrats et avenants
-            7. **Analyse temporelle** - Évolution dans le temps avec volumes quotidiens et mensuels
-            
-            ### ✨ Caractéristiques :
-            - 🎨 Mise en forme professionnelle sur tous les onglets
-            - 📊 Tableaux de synthèse avec pourcentages
-            - 🔍 Filtres automatiques activés
-            - 📈 Analyses croisées multiples (Type × Statut, Agence × Erreurs)
-            - ⚠️ Messages d'erreur détaillés pour les contrats KO
-            - 🏢 **Analyse approfondie par agence avec identification des problèmes**
-            - 🎯 **Identification des agences avec le plus de rejets**
-            - 📊 **Typologie des erreurs par agence**
+            7. **Analyse temporelle** - Évolution dans le temps
             """)
             
             excel_file = create_comprehensive_excel(df_clean)
@@ -867,23 +861,6 @@ if uploaded_file is not None:
             )
             
             st.success("✅ Fichier Excel avec 7 onglets d'analyse prêt au téléchargement !")
-            
-            # Aperçu des métriques clés
-            st.markdown("### 📊 Aperçu des métriques clés du rapport")
-            col1, col2, col3, col4 = st.columns(4)
-            
-            with col1:
-                st.metric("Total contrats", len(df_clean))
-            with col2:
-                if 'Statut_Final' in df_clean.columns:
-                    ok_pct = round(len(df_clean[df_clean['Statut_Final'].str.upper() == 'OK']) / len(df_clean) * 100, 1)
-                    st.metric("Taux réussite", f"{ok_pct}%")
-            with col3:
-                if 'Code_Unite' in df_clean.columns:
-                    st.metric("Agences", df_clean['Code_Unite'].nunique())
-            with col4:
-                if 'Type (libellé)' in df_clean.columns:
-                    st.metric("Types contrats", df_clean['Type (libellé)'].nunique())
     
     except Exception as e:
         st.error(f"❌ Erreur lors du traitement du fichier : {str(e)}")
@@ -892,73 +869,10 @@ if uploaded_file is not None:
 
 else:
     st.info("👆 Commencez par uploader un fichier Excel pour l'analyser")
-    
-    st.markdown("""
-    ### 🚀 Fonctionnalités de l'application
-    
-    #### 🔍 Recherche intelligente
-    - Recherche simple par colonne (contient, égal à, commence par)
-    - Recherche avancée avec filtres multiples (statut, type, agence, etc.)
-    - Export des résultats de recherche en CSV
-    - Statistiques instantanées sur les résultats
-    
-    #### 1️⃣ Nettoyage automatique
-    - Suppression des lignes et colonnes vides
-    - Gestion intelligente des valeurs "nan"
-    - Suppression des espaces superflus
-    
-    #### 2️⃣ Analyses multi-niveaux
-    - Vue d'ensemble avec métriques clés (taux de réussite, volumes)
-    - **🆕 Analyse complète par agence (Code_Unite)**
-      - Identification des agences avec le plus de rejets
-      - Taux de réussite par agence
-      - Croisement agences × types d'erreurs
-      - Volume d'intégrations par agence
-    - Analyse détaillée des contrats OK (par type, par agence)
-    - Analyse approfondie des contrats KO avec messages d'erreur
-    - Répartition Initial vs Avenants
-    - Croisements multiples (Type × Statut, Agence × Erreurs)
-    - Analyse temporelle (évolution quotidienne et mensuelle)
-    
-    #### 3️⃣ Visualisations interactives
-    - Graphiques de distribution OK/KO
-    - Top agences par volume et taux de réussite
-    - Heatmap agences × types d'erreurs
-    - Évolution temporelle
-    - Analyse croisée Type × Statut
-    - Tableaux de bord dynamiques
-    
-    #### 4️⃣ Export Excel multi-onglets
-    - **7 onglets d'analyse** au lieu d'un seul fichier
-    - Onglet dédié à l'analyse par agence
-    - Chaque onglet répond à une question spécifique
-    - Mise en forme professionnelle automatique
-    - Tableaux de synthèse avec pourcentages
-    - Filtres et navigation optimisés
-    
-    ---
-    
-    ### 📊 Spécificités pour les contrats
-    - Détection automatique des statuts OK/KO
-    - **Analyse approfondie par agence (Code_Unite)**
-    - **Identification des agences problématiques**
-    - **Typologie des erreurs par agence**
-    - Analyse des messages d'erreur (Integration et Transfert)
-    - Classification Initial/Avenant
-    - Suivi par unité et par type de contrat
-    - Analyse temporelle des intégrations
-    
-    ### 📋 Formats supportés
-    - `.xlsx` (Excel 2007 et plus récent)
-    - `.xls` (Excel 97-2003)
-    
-    ### ⚡ Performance
-    Optimisé pour traiter des fichiers avec **plusieurs dizaines de milliers de lignes**
-    """)
 
 # Footer
 st.markdown("---")
 st.markdown(
-    "<div style='text-align: center; color: #666;'>Excel Analyzer Pro - Analyse intelligente de contrats avec recherche avancée et rapports multi-onglets</div>",
+    "<div style='text-align: center; color: #666;'>Excel Analyzer Pro - Analyse intelligente de contrats</div>",
     unsafe_allow_html=True
 )
