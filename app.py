@@ -7,6 +7,8 @@ import io
 from openpyxl import load_workbook
 from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 from openpyxl.utils.dataframe import dataframe_to_rows
+from thefuzz import fuzz, process
+import re
 
 # Configuration de la page
 st.set_page_config(
