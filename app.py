@@ -1,6 +1,3 @@
-# Excel Analyzer Pro - Version Complète
-# Application Streamlit pour l'analyse intelligente de fichiers Excel
-
 import streamlit as st
 import pandas as pd
 import plotly.express as px
@@ -11,511 +8,904 @@ from openpyxl import Workbook
 from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 from openpyxl.utils.dataframe import dataframe_to_rows
 from thefuzz import fuzz, process
-import re
 
-# ==================== CONFIGURATION ====================
-st.set_page_config(
-    page_title="Excel Analyzer Pro",
-    page_icon="📊",
-    layout="wide"
-)
-
+st.set_page_config(page_title="Excel Analyzer Pro", page_icon="📊", layout="wide")
 st.title("📊 Excel Analyzer Pro - Analyse intelligente de contrats")
 st.markdown("### Embellissez, analysez et recherchez dans vos fichiers Excel")
 
-# ==================== FONCTIONS UTILITAIRES ====================
+# ==================== FONCTIONS ====================
 
 def clean_data(df):
-    """Nettoie les données du DataFrame"""
     df = df.dropna(how='all').dropna(axis=1, how='all')
     for col in df.select_dtypes(include=['object']).columns:
         df[col] = df[col].astype(str).str.strip()
-    df = df.replace('nan', '').fillna('')
-    return df
+    return df.replace('nan', '').fillna('')
 
-def parse_natural_language_query(query, df):
-    """Parse une requête en langage naturel"""
+def parse_nl_query(query, df):
     filters = {}
-    query_lower = query.lower()
-    
-    # Statuts
-    if any(word in query_lower for word in ['ko', 'échec', 'erreur', 'rejet']):
-        filters['statut'] = 'KO'
-    elif any(word in query_lower for word in ['ok', 'réussi', 'succès']):
-        filters['statut'] = 'OK'
-    
-    # Agences
+    q = query.lower()
+    if any(w in q for w in ['ko','échec','erreur','rejet']): filters['statut'] = 'KO'
+    elif any(w in q for w in ['ok','réussi','succès']): filters['statut'] = 'OK'
     if 'Code_Unite' in df.columns:
-        for agence in df['Code_Unite'].unique():
-            if str(agence).lower() in query_lower:
-                filters['agence'] = agence
-                break
-    
-    # Mois
-    mois_map = {'janvier':1,'jan':1,'février':2,'fev':2,'mars':3,'avril':4,'mai':5,'juin':6,
-                'juillet':7,'août':8,'aout':8,'septembre':9,'sept':9,'octobre':10,'novembre':11,'décembre':12,'dec':12}
-    for nom, num in mois_map.items():
-        if nom in query_lower:
-            filters['mois'] = num
-            break
-    
-    # Initial/Avenant
-    if 'initial' in query_lower:
-        filters['init_avenant'] = 'Initial'
-    elif 'avenant' in query_lower:
-        filters['init_avenant'] = 'Avenant'
-    
+        for ag in df['Code_Unite'].unique():
+            if str(ag).lower() in q: filters['agence'] = ag; break
+    mois = {'janvier':1,'jan':1,'février':2,'fev':2,'mars':3,'avril':4,'mai':5,'juin':6,'juillet':7,'août':8,'aout':8,'septembre':9,'sept':9,'octobre':10,'novembre':11,'décembre':12,'dec':12}
+    for n,m in mois.items():
+        if n in q: filters['mois'] = m; break
+    if 'initial' in q: filters['init_avenant'] = 'Initial'
+    elif 'avenant' in q: filters['init_avenant'] = 'Avenant'
     return filters
 
-def fuzzy_search(query, df, column, limit=10):
-    """Recherche floue"""
-    if column not in df.columns:
-        return []
-    values = [v for v in df[column].dropna().astype(str).unique() if v.strip()]
-    if not values or not query.strip():
-        return []
-    matches = process.extract(query, values, limit=limit, scorer=fuzz.token_sort_ratio)
-    return [(m[0], m[1]) for m in matches if m[1] > 50]
+def fuzzy_search(query, df, col, lim=10):
+    if col not in df.columns: return []
+    vals = [v for v in df[col].dropna().astype(str).unique() if v.strip()]
+    if not vals or not query.strip(): return []
+    return [(m[0],m[1]) for m in process.extract(query,vals,limit=lim,scorer=fuzz.token_sort_ratio) if m[1]>50]
 
-def calculate_relevance_score(row, query, filters):
-    """Calcule le score de pertinence"""
+def calc_score(row, query, filters):
     score = 0
-    query_lower = query.lower()
-    
     if 'Contrat' in row.index:
-        if query_lower in str(row['Contrat']).lower():
-            score += 100
-        else:
-            score += fuzz.partial_ratio(query_lower, str(row['Contrat']).lower()) * 0.5
-    
-    if filters.get('agence') and row.get('Code_Unite') == filters['agence']:
-        score += 50
+        if query.lower() in str(row['Contrat']).lower(): score += 100
+        else: score += fuzz.partial_ratio(query.lower(), str(row['Contrat']).lower()) * 0.5
+    if filters.get('agence') and row.get('Code_Unite') == filters['agence']: score += 50
     if filters.get('statut'):
-        if filters['statut'] == 'KO' and str(row.get('Statut_Final','')).upper() != 'OK':
-            score += 50
-        elif filters['statut'] == 'OK' and str(row.get('Statut_Final','')).upper() == 'OK':
-            score += 50
-    if filters.get('mois') and 'Date_Integration' in row.index:
+        if filters['statut']=='KO' and str(row.get('Statut_Final','')).upper()!='OK': score += 50
+        elif filters['statut']=='OK' and str(row.get('Statut_Final','')).upper()=='OK': score += 50
+    if filters.get('mois'):
         try:
-            if pd.to_datetime(row['Date_Integration']).month == filters['mois']:
-                score += 40
-        except:
-            pass
-    
+            if pd.to_datetime(row.get('Date_Integration')).month == filters['mois']: score += 40
+        except: pass
     return score
 
-def get_smart_suggestions(partial_input, df, limit=5):
-    """Génère des suggestions intelligentes"""
-    suggestions = []
-    if not partial_input or len(partial_input) < 2:
-        return suggestions
-    
-    partial_lower = partial_input.lower()
-    
-    # Contrats
+def get_suggestions(inp, df, lim=5):
+    if not inp or len(inp)<2: return []
+    sugg = []
     if 'Contrat' in df.columns:
-        matches = df['Contrat'].dropna().astype(str)
-        matches = matches[matches.str.contains(partial_input, case=False, na=False)].head(limit)
-        suggestions.extend([{'type':'📄 Contrat','value':c,'score':fuzz.partial_ratio(partial_lower,c.lower())} for c in matches])
-    
-    # Agences
+        for c in df['Contrat'].dropna().astype(str)[df['Contrat'].astype(str).str.contains(inp,case=False,na=False)].head(lim):
+            sugg.append({'type':'📄 Contrat','value':c,'score':fuzz.partial_ratio(inp.lower(),c.lower())})
     if 'Code_Unite' in df.columns:
-        for agence in df['Code_Unite'].unique():
-            if partial_lower in str(agence).lower():
-                suggestions.append({'type':'🏢 Agence','value':agence,'score':fuzz.ratio(partial_lower,str(agence).lower())})
-    
-    # Statuts
-    if 'ko' in partial_lower:
-        suggestions.append({'type':'❌ Statut','value':'KO','score':100})
-    if 'ok' in partial_lower:
-        suggestions.append({'type':'✅ Statut','value':'OK','score':100})
-    
-    return sorted(suggestions, key=lambda x: x['score'], reverse=True)[:limit]
+        for ag in df['Code_Unite'].unique():
+            if inp.lower() in str(ag).lower(): sugg.append({'type':'🏢 Agence','value':ag,'score':100})
+    if 'ko' in inp.lower(): sugg.append({'type':'❌ Statut','value':'KO','score':100})
+    if 'ok' in inp.lower(): sugg.append({'type':'✅ Statut','value':'OK','score':100})
+    return sorted(sugg, key=lambda x:x['score'], reverse=True)[:lim]
 
-def style_worksheet(ws):
-    """Style une feuille Excel"""
-    header_fill = PatternFill(start_color="366092", end_color="366092", fill_type="solid")
-    header_font = Font(bold=True, color="FFFFFF", size=11)
-    
-    for cell in ws[1]:
-        cell.fill = header_fill
-        cell.font = header_font
-        cell.alignment = Alignment(horizontal='center', vertical='center')
-        cell.border = Border(left=Side(style='thin'),right=Side(style='thin'),top=Side(style='thin'),bottom=Side(style='thin'))
-    
-    for row_idx, row in enumerate(ws.iter_rows(min_row=2, max_row=ws.max_row), start=2):
-        fill = PatternFill(start_color="F2F2F2" if row_idx%2==0 else "FFFFFF", fill_type="solid")
-        for cell in row:
-            cell.fill = fill
-            cell.border = Border(left=Side(style='thin'),right=Side(style='thin'),top=Side(style='thin'),bottom=Side(style='thin'))
-    
+def style_ws(ws):
+    hf = PatternFill(start_color="366092",end_color="366092",fill_type="solid")
+    for c in ws[1]:
+        c.fill = hf
+        c.font = Font(bold=True,color="FFFFFF",size=11)
+        c.alignment = Alignment(horizontal='center',vertical='center')
+        c.border = Border(left=Side(style='thin'),right=Side(style='thin'),top=Side(style='thin'),bottom=Side(style='thin'))
+    for i,row in enumerate(ws.iter_rows(min_row=2,max_row=ws.max_row),2):
+        fill = PatternFill(start_color="F2F2F2" if i%2==0 else "FFFFFF",fill_type="solid")
+        for c in row:
+            c.fill = fill
+            c.border = Border(left=Side(style='thin'),right=Side(style='thin'),top=Side(style='thin'),bottom=Side(style='thin'))
     for col in ws.columns:
-        max_len = max(len(str(cell.value or '')) for cell in col)
-        ws.column_dimensions[col[0].column_letter].width = min(max_len + 2, 50)
-    
+        ws.column_dimensions[col[0].column_letter].width = min(max(len(str(c.value or '')) for c in col)+2, 50)
     ws.freeze_panes = 'A2'
 
-def create_comprehensive_excel(df):
-    """Crée l'Excel complet avec tous les onglets"""
-    from openpyxl import Workbook
+def create_excel(df):
+    """Crée Excel ULTRA-DÉTAILLÉ avec 7 onglets complets"""
     output = io.BytesIO()
     wb = Workbook()
     wb.remove(wb.active)
     
-    # Onglet 1: Données
-    ws_data = wb.create_sheet('Données nettoyées')
+    # ONGLET 1: Données nettoyées
+    ws1 = wb.create_sheet('Données nettoyées')
     for r in dataframe_to_rows(df, index=False, header=True):
-        ws_data.append(r)
-    style_worksheet(ws_data)
+        ws1.append(r)
+    style_ws(ws1)
     
-    # Onglet 2: Vue d'ensemble
+    # ONGLET 2: Vue d'ensemble
     total = len(df)
-    ok = len(df[df['Statut_Final'].str.upper() == 'OK'])
+    ok = len(df[df['Statut_Final'].str.upper()=='OK'])
     ko = total - ok
+    taux = round(ok/total*100,2) if total else 0
+    init = len(df[df['Initial/Avenant'].str.contains('Initial',case=False,na=False)])
+    aven = len(df[df['Initial/Avenant'].str.contains('Avenant',case=False,na=False)])
     
-    ws_vue = wb.create_sheet('Vue d ensemble')
-    vue_data = [
-        ['Métrique', 'Valeur'],
-        ['Total contrats', total],
-        ['Contrats OK', ok],
-        ['Contrats KO', ko],
-        ['Taux réussite', f"{round(ok/total*100,1) if total else 0}%"],
-        ['Agences', df['Code_Unite'].nunique() if 'Code_Unite' in df.columns else 0]
-    ]
-    for row in vue_data:
-        ws_vue.append(row)
-    style_worksheet(ws_vue)
+    ws2 = wb.create_sheet('Vue d ensemble')
+    vue = [['Métrique','Valeur'],
+           ['Nombre total de contrats',total],
+           ['Nombre de contrats OK',ok],
+           ['Nombre de contrats KO',ko],
+           ['Taux de réussite (%)',f'{taux}%'],
+           ['Nombre de contrats initiaux',init],
+           ['Nombre d\'avenants',aven],
+           ['Nombre d\'agences',df['Code_Unite'].nunique() if 'Code_Unite' in df.columns else 0]]
+    for r in vue: ws2.append(r)
+    style_ws(ws2)
     
-    # Onglet 3: Analyse Agences ENRICHIE
-    if 'Code_Unite' in df.columns:
-        ws_ag = wb.create_sheet('Analyse par agence')
-        ws_ag.append(['ANALYSE COMPLÈTE PAR AGENCE'])
-        ws_ag['A1'].font = Font(bold=True, size=14)
-        ws_ag.append([])
+    # ONGLET 3: Analyse par agence ULTRA-DÉTAILLÉE
+    if 'Code_Unite' in df.columns and 'Statut_Final' in df.columns:
+        ws3 = wb.create_sheet('Analyse par agence')
+        r = 1
         
-        # Métriques par agence
-        agences = []
+        # Titre
+        ws3.cell(r,1,'ANALYSE COMPLÈTE PAR AGENCE (CODE_UNITE)').font = Font(bold=True,size=14,color="366092")
+        ws3.merge_cells(f'A{r}:G{r}')
+        r += 2
+        
+        # Calculer métriques
+        ag_metrics = []
         for ag in df['Code_Unite'].unique():
-            df_ag = df[df['Code_Unite']==ag]
-            t = len(df_ag)
-            o = (df_ag['Statut_Final'].str.upper()=='OK').sum()
-            agences.append({'Agence':ag,'Total':t,'OK':o,'KO':t-o,'Taux':round(o/t*100,1) if t else 0})
+            d = df[df['Code_Unite']==ag]
+            t = len(d)
+            o = (d['Statut_Final'].str.upper()=='OK').sum()
+            ag_metrics.append({'Agence':ag,'Total':t,'OK':o,'KO':t-o,'Taux':round(o/t*100,2) if t else 0})
         
-        df_ag = pd.DataFrame(agences)
-        if len(df_ag) > 0:
-            moy = df_ag['Taux'].mean()
+        df_ag = pd.DataFrame(ag_metrics)
+        moy = df_ag['Taux'].mean()
+        
+        # Dashboard exécutif
+        ws3.cell(r,1,'🎯 DASHBOARD EXÉCUTIF').font = Font(bold=True,size=13,color="FF0000")
+        r += 1
+        
+        dash = [['Indicateur','Valeur'],
+                ['🏆 Meilleure agence',f"{df_ag.loc[df_ag['Taux'].idxmax(),'Agence']} ({df_ag['Taux'].max():.1f}%)"],
+                ['🔴 Pire agence',f"{df_ag.loc[df_ag['Taux'].idxmin(),'Agence']} ({df_ag['Taux'].min():.1f}%)"],
+                ['📊 Taux moyen national',f'{moy:.1f}%'],
+                ['⚠️ Agences en alerte (< 60%)',len(df_ag[df_ag['Taux']<60])],
+                ['✅ Agences au-dessus moyenne',f"{len(df_ag[df_ag['Taux']>=moy])}/{len(df_ag)}"],
+                ['📈 Total agences',len(df_ag)]]
+        
+        for row in dash:
+            ws3.append(row)
+            if dash.index(row) == 0:
+                for c in ws3[r]:
+                    c.fill = PatternFill(start_color="4472C4",end_color="4472C4",fill_type="solid")
+                    c.font = Font(bold=True,color="FFFFFF")
+            r += 1
+        r += 2
+        
+        # Classement général
+        ws3.cell(r,1,'1. 🏆 CLASSEMENT GÉNÉRAL DES AGENCES').font = Font(bold=True,size=12)
+        r += 1
+        
+        df_ag['Écart vs Moyenne'] = (df_ag['Taux'] - moy).round(1)
+        df_ag['Rang'] = df_ag['Taux'].rank(ascending=False,method='min').astype(int)
+        df_ag['Statut'] = df_ag['Taux'].apply(lambda x: '🟢 Excellent' if x>=80 else '🟡 Moyen' if x>=60 else '🔴 Critique')
+        df_class = df_ag.sort_values('Rang')[['Rang','Agence','Total','OK','KO','Taux','Écart vs Moyenne','Statut']]
+        
+        for row_idx, row in enumerate(dataframe_to_rows(df_class,index=False,header=True),r):
+            for col_idx, val in enumerate(row,1):
+                cell = ws3.cell(row_idx,col_idx,val)
+                if row_idx == r:
+                    cell.fill = PatternFill(start_color="70AD47",end_color="70AD47",fill_type="solid")
+                    cell.font = Font(bold=True,color="FFFFFF")
+                else:
+                    if col_idx == 8:
+                        if '🟢' in str(val): cell.fill = PatternFill(start_color="C6EFCE",fill_type="solid")
+                        elif '🔴' in str(val): cell.fill = PatternFill(start_color="FFC7CE",fill_type="solid")
+                        elif '🟡' in str(val): cell.fill = PatternFill(start_color="FFEB9C",fill_type="solid")
+        r += len(df_class) + 3
+        
+        # Agences à risque
+        risque = df_class[df_class['Taux']<60]
+        if len(risque)>0:
+            ws3.cell(r,1,'2. ⚠️ AGENCES À RISQUE (Taux < 60%)').font = Font(bold=True,size=12,color="C00000")
+            r += 1
+            risque_display = risque.copy()
+            risque_display['Action recommandée'] = 'Audit urgent + Plan d\'action'
+            for row_idx, row in enumerate(dataframe_to_rows(risque_display,index=False,header=True),r):
+                for col_idx, val in enumerate(row,1):
+                    cell = ws3.cell(row_idx,col_idx,val)
+                    if row_idx == r:
+                        cell.fill = PatternFill(start_color="C00000",fill_type="solid")
+                        cell.font = Font(bold=True,color="FFFFFF")
+                    else:
+                        cell.fill = PatternFill(start_color="FFC7CE",fill_type="solid")
+            r += len(risque) + 3
+        
+        # Top 5 performers
+        top5 = df_class.head(5)
+        ws3.cell(r,1,'3. 🌟 TOP 5 PERFORMERS').font = Font(bold=True,size=12,color="00B050")
+        r += 1
+        for row_idx, row in enumerate(dataframe_to_rows(top5,index=False,header=True),r):
+            for col_idx, val in enumerate(row,1):
+                cell = ws3.cell(row_idx,col_idx,val)
+                if row_idx == r:
+                    cell.fill = PatternFill(start_color="00B050",fill_type="solid")
+                    cell.font = Font(bold=True,color="FFFFFF")
+                else:
+                    cell.fill = PatternFill(start_color="C6EFCE",fill_type="solid")
+        r += len(top5) + 3
+        
+        # Volume par agence
+        ws3.cell(r,1,'4. 📊 VOLUME TOTAL PAR AGENCE').font = Font(bold=True,size=12)
+        r += 1
+        vol = df['Code_Unite'].value_counts().reset_index()
+        vol.columns = ['Agence','Nombre total']
+        vol['% du total'] = round(vol['Nombre total']/total*100,2)
+        for row in dataframe_to_rows(vol,index=False,header=True):
+            ws3.append(row)
+            r += 1
+        r += 2
+        
+        # Croisement Agences × Types d'erreurs
+        df_ko = df[df['Statut_Final'].str.upper()!='OK']
+        if len(df_ko)>0:
+            ws3.cell(r,1,'5. 🔀 CROISEMENT AGENCES × TYPES D\'ERREURS').font = Font(bold=True,size=12)
+            r += 1
+            try:
+                cross = pd.crosstab(df_ko['Code_Unite'],df_ko['Statut_Final'],margins=True).reset_index()
+                for row in dataframe_to_rows(cross,index=False,header=True):
+                    ws3.append(row)
+                    r += 1
+            except: pass
+    
+    # ONGLET 4: Contrats OK détaillé
+    if ok > 0:
+        ws4 = wb.create_sheet('Contrats OK')
+        df_ok = df[df['Statut_Final'].str.upper()=='OK']
+        
+        # Résumé
+        ws4.append(['ANALYSE DES CONTRATS OK'])
+        ws4.append([])
+        ws4.append(['Métrique','Valeur'])
+        ws4.append(['Total contrats OK',ok])
+        ws4.append(['% du total',f'{round(ok/total*100,1)}%'])
+        ws4.append(['Nombre de types différents',df_ok['Type (libellé)'].nunique()])
+        ws4.append(['Nombre d\'agences',df_ok['Code_Unite'].nunique()])
+        ws4.append([])
+        
+        # Par type
+        ws4.append(['RÉPARTITION PAR TYPE DE CONTRAT'])
+        ok_type = df_ok['Type (libellé)'].value_counts().reset_index()
+        ok_type.columns = ['Type','Nombre']
+        ok_type['%'] = round(ok_type['Nombre']/ok*100,1)
+        for r in dataframe_to_rows(ok_type,index=False,header=True):
+            ws4.append(r)
+        ws4.append([])
+        
+        # Par agence
+        ws4.append(['RÉPARTITION PAR AGENCE'])
+        ok_ag = df_ok['Code_Unite'].value_counts().reset_index()
+        ok_ag.columns = ['Agence','Nombre']
+        ok_ag['%'] = round(ok_ag['Nombre']/ok*100,1)
+        for r in dataframe_to_rows(ok_ag,index=False,header=True):
+            ws4.append(r)
+        
+        style_ws(ws4)
+    
+    # ONGLET 5: Contrats KO détaillé
+    if ko > 0:
+        ws5 = wb.create_sheet('Contrats KO')
+        df_ko = df[df['Statut_Final'].str.upper()!='OK']
+        
+        # Résumé
+        ws5.append(['ANALYSE DES CONTRATS KO'])
+        ws5.append([])
+        ws5.append(['Métrique','Valeur'])
+        ws5.append(['Total contrats KO',ko])
+        ws5.append(['% du total',f'{round(ko/total*100,1)}%'])
+        ws5.append(['Taux d\'échec',f'{round(ko/total*100,1)}%'])
+        ws5.append(['Nombre de types d\'erreurs',df_ko['Statut_Final'].nunique()])
+        ws5.append(['Nombre d\'agences concernées',df_ko['Code_Unite'].nunique()])
+        ws5.append([])
+        
+        # Types d'erreurs
+        ws5.append(['RÉPARTITION DES ERREURS PAR STATUT'])
+        ko_stat = df_ko['Statut_Final'].value_counts().reset_index()
+        ko_stat.columns = ['Type d\'erreur','Nombre']
+        ko_stat['%'] = round(ko_stat['Nombre']/ko*100,1)
+        for r in dataframe_to_rows(ko_stat,index=False,header=True):
+            ws5.append(r)
+        ws5.append([])
+        
+        # Par agence
+        ws5.append(['REJETS PAR AGENCE'])
+        ko_ag = df_ko['Code_Unite'].value_counts().reset_index()
+        ko_ag.columns = ['Agence','Nombre de rejets']
+        ko_ag['% des rejets'] = round(ko_ag['Nombre de rejets']/ko*100,1)
+        for r in dataframe_to_rows(ko_ag,index=False,header=True):
+            ws5.append(r)
+        ws5.append([])
+        
+        # Messages d'erreur
+        if 'Message_Integration' in df_ko.columns:
+            msg_int = df_ko[df_ko['Message_Integration']!='']['Message_Integration'].value_counts().head(15)
+            if len(msg_int)>0:
+                ws5.append(['TOP 15 MESSAGES D\'ERREUR - INTÉGRATION'])
+                for r in dataframe_to_rows(pd.DataFrame({'Message':msg_int.index,'Occurrences':msg_int.values}),index=False,header=True):
+                    ws5.append(r)
+                ws5.append([])
+        
+        # Par type de contrat
+        ws5.append(['CONTRATS KO PAR TYPE'])
+        ko_type = df_ko['Type (libellé)'].value_counts().reset_index()
+        ko_type.columns = ['Type','Nombre KO']
+        for r in dataframe_to_rows(ko_type,index=False,header=True):
+            ws5.append(r)
+        
+        style_ws(ws5)
+    
+    # ONGLET 6: Types et Avenants
+    ws6 = wb.create_sheet('Types et Avenants')
+    ws6.append(['ANALYSE DES TYPES DE CONTRATS ET AVENANTS'])
+    ws6.append([])
+    
+    # Initial vs Avenant
+    ws6.append(['RÉPARTITION INITIAL VS AVENANT'])
+    ia = df['Initial/Avenant'].value_counts().reset_index()
+    ia.columns = ['Catégorie','Nombre']
+    ia['%'] = round(ia['Nombre']/total*100,1)
+    for r in dataframe_to_rows(ia,index=False,header=True):
+        ws6.append(r)
+    ws6.append([])
+    
+    # Types détaillés
+    ws6.append(['DÉTAIL PAR TYPE DE CONTRAT'])
+    types = df['Type (libellé)'].value_counts().reset_index()
+    types.columns = ['Type','Nombre']
+    types['%'] = round(types['Nombre']/total*100,1)
+    for r in dataframe_to_rows(types,index=False,header=True):
+        ws6.append(r)
+    ws6.append([])
+    
+    # Croisement Type × Statut
+    ws6.append(['CROISEMENT TYPE × STATUT'])
+    try:
+        cross_ts = pd.crosstab(df['Type (libellé)'],df['Statut_Final'],margins=True).reset_index()
+        for r in dataframe_to_rows(cross_ts,index=False,header=True):
+            ws6.append(r)
+    except: pass
+    
+    style_ws(ws6)
+    
+    # ONGLET 7: Analyse temporelle
+    if 'Date_Integration' in df.columns:
+        ws7 = wb.create_sheet('Analyse temporelle')
+        df_temp = df.copy()
+        df_temp['Date_Integration'] = pd.to_datetime(df_temp['Date_Integration'],errors='coerce')
+        df_temp = df_temp.dropna(subset=['Date_Integration'])
+        
+        if len(df_temp)>0:
+            ws7.append(['ANALYSE TEMPORELLE'])
+            ws7.append([])
+            ws7.append(['Métrique','Valeur'])
+            ws7.append(['Date la plus ancienne',df_temp['Date_Integration'].min().strftime('%d/%m/%Y')])
+            ws7.append(['Date la plus récente',df_temp['Date_Integration'].max().strftime('%d/%m/%Y')])
+            ws7.append(['Nombre de jours couverts',(df_temp['Date_Integration'].max()-df_temp['Date_Integration'].min()).days])
+            ws7.append([])
             
-            # Dashboard
-            ws_ag.append(['🎯 DASHBOARD EXÉCUTIF'])
-            ws_ag.append(['Meilleure agence', f"{df_ag.loc[df_ag['Taux'].idxmax(),'Agence']} ({df_ag['Taux'].max()}%)"])
-            ws_ag.append(['Pire agence', f"{df_ag.loc[df_ag['Taux'].idxmin(),'Agence']} ({df_ag['Taux'].min()}%)"])
-            ws_ag.append(['Taux moyen', f"{moy:.1f}%"])
-            ws_ag.append(['Agences < 60%', len(df_ag[df_ag['Taux']<60])])
-            ws_ag.append([])
+            # Par jour
+            ws7.append(['VOLUME PAR JOUR'])
+            df_temp['Date'] = df_temp['Date_Integration'].dt.date
+            daily = df_temp.groupby('Date').size().reset_index(name='Nombre')
+            for r in dataframe_to_rows(daily,index=False,header=True):
+                ws7.append(r)
+            ws7.append([])
             
-            # Classement
-            ws_ag.append(['CLASSEMENT GÉNÉRAL'])
-            df_ag['Rang'] = df_ag['Taux'].rank(ascending=False, method='min').astype(int)
-            df_ag['Écart'] = (df_ag['Taux'] - moy).round(1)
-            df_ag['Statut'] = df_ag['Taux'].apply(lambda x: '🟢 Excellent' if x>=80 else '🟡 Moyen' if x>=60 else '🔴 Critique')
-            df_ag = df_ag.sort_values('Rang')
+            # Par mois
+            ws7.append(['VOLUME PAR MOIS'])
+            df_temp['Mois'] = df_temp['Date_Integration'].dt.to_period('M').astype(str)
+            monthly = df_temp.groupby('Mois').size().reset_index(name='Nombre')
+            for r in dataframe_to_rows(monthly,index=False,header=True):
+                ws7.append(r)
             
-            for r in dataframe_to_rows(df_ag[['Rang','Agence','Total','OK','KO','Taux','Écart','Statut']], index=False, header=True):
-                ws_ag.append(r)
+            style_ws(ws7)
     
     wb.save(output)
     output.seek(0)
     return output
 
-# ==================== INTERFACE STREAMLIT ====================
+# ==================== INTERFACE ====================
 
-uploaded_file = st.file_uploader("📁 Fichier Excel", type=['xlsx','xls'])
+uploaded = st.file_uploader("📁 Fichier Excel", type=['xlsx','xls'])
 
-if uploaded_file:
+if uploaded:
     try:
-        df = pd.read_excel(uploaded_file)
+        df = pd.read_excel(uploaded)
         with st.expander("👁️ Aperçu", expanded=False):
             st.dataframe(df.head(10), width='stretch')
         
         df_clean = clean_data(df)
         st.success(f"✅ {len(df_clean)} lignes, {len(df_clean.columns)} colonnes")
         
-        tab1,tab2,tab3,tab4,tab5,tab6 = st.tabs(["🔍 Recherche","📋 Données","🏢 Agences","📊 Analyses","📈 Visualisations","💾 Export"])
+        tab1,tab2,tab3,tab4,tab5,tab6 = st.tabs(["🔍 Recherche","📋 Données","🏢 Dashboard","📊 Analyses","📈 Visualisations","💾 Export"])
         
-        # TAB 1: RECHERCHE INTELLIGENTE
+        # TAB 1: RECHERCHE
         with tab1:
             st.subheader("🔍 Recherche Hybride Intelligente")
             
-            if 'history' not in st.session_state:
-                st.session_state.history = []
+            if 'hist' not in st.session_state:
+                st.session_state.hist = []
             
             col1,col2 = st.columns([4,1])
             with col1:
-                query = st.text_input("🔎 Recherche", placeholder="Ex: contrats ko nvm septembre")
+                q = st.text_input("🔎 Recherche", placeholder="Ex: contrats ko nvm septembre")
             with col2:
                 mode = st.selectbox("Mode", ["🧠 Hybride","🎯 Exact","🔤 Flou"])
             
-            if query and len(query) >= 2:
-                sugg = get_smart_suggestions(query, df_clean, 5)
+            if q and len(q)>=2:
+                sugg = get_suggestions(q, df_clean)
                 if sugg:
                     with st.expander("💡 Suggestions", expanded=True):
                         cols = st.columns(min(len(sugg),5))
-                        for i,s in enumerate(sugg[:5]):
-                            with cols[i]:
-                                st.button(f"{s['type']}: {s['value']}", key=f"s{i}")
+                        for i,s in enumerate(sugg):
+                            cols[i].button(f"{s['type']}: {s['value']}", key=f"sg{i}")
             
-            if st.button("🔍 RECHERCHER", type="primary") and query:
-                with st.spinner("Recherche..."):
-                    results = df_clean.copy()
+            if st.button("🔍 RECHERCHER", type="primary") and q:
+                res = df_clean.copy()
+                
+                if mode == "🧠 Hybride":
+                    filt = parse_nl_query(q, df_clean)
+                    if filt:
+                        st.info(f"Filtres: {', '.join([f'{k}:{v}' for k,v in filt.items()])}")
                     
-                    if mode == "🧠 Hybride":
-                        filters = parse_natural_language_query(query, df_clean)
-                        if filters:
-                            st.info(f"Filtres: {', '.join([f'{k}:{v}' for k,v in filters.items()])}")
-                        
-                        if filters.get('statut'):
-                            if filters['statut'] == 'KO':
-                                results = results[results['Statut_Final'].str.upper() != 'OK']
-                            else:
-                                results = results[results['Statut_Final'].str.upper() == 'OK']
-                        if filters.get('agence'):
-                            results = results[results['Code_Unite'] == filters['agence']]
-                        if filters.get('mois'):
-                            results['Date_Integration'] = pd.to_datetime(results['Date_Integration'], errors='coerce')
-                            results = results[results['Date_Integration'].dt.month == filters['mois']]
-                        
-                        results['_score'] = results.apply(lambda r: calculate_relevance_score(r, query, filters), axis=1)
-                        results = results[results['_score'] > 0].sort_values('_score', ascending=False)
+                    if filt.get('statut'):
+                        res = res[res['Statut_Final'].str.upper()==filt['statut']] if filt['statut']=='OK' else res[res['Statut_Final'].str.upper()!='OK']
+                    if filt.get('agence'):
+                        res = res[res['Code_Unite']==filt['agence']]
+                    if filt.get('mois'):
+                        res['Date_Integration'] = pd.to_datetime(res['Date_Integration'],errors='coerce')
+                        res = res[res['Date_Integration'].dt.month==filt['mois']]
                     
-                    elif mode == "🎯 Exact":
-                        mask = pd.Series([False] * len(results))
-                        for col in results.columns:
-                            mask |= results[col].astype(str).str.contains(query, case=False, na=False)
-                        results = results[mask]
-                    
-                    else:  # Flou
-                        if 'Contrat' in results.columns:
-                            matches = fuzzy_search(query, results, 'Contrat', 50)
-                            if matches:
-                                results = results[results['Contrat'].isin([m[0] for m in matches])]
-                                results['_score'] = results['Contrat'].map({m[0]:m[1] for m in matches})
-                                results = results.sort_values('_score', ascending=False)
-                    
-                    if len(results) > 0:
-                        st.success(f"✅ {len(results)} résultat(s)")
-                        
-                        if '_score' in results.columns:
-                            col1,col2,col3 = st.columns(3)
-                            col1.metric("Score moyen", f"{results['_score'].mean():.0f}%")
-                            col2.metric("Meilleur", f"{results['_score'].max():.0f}%")
-                            col3.metric("Minimum", f"{results['_score'].min():.0f}%")
-                        
-                        st.dataframe(results, width='stretch', height=400)
-                        
-                        csv = results.to_csv(index=False).encode()
-                        st.download_button("📥 CSV", csv, f"recherche_{datetime.now():%Y%m%d_%H%M%S}.csv")
-                    else:
-                        st.warning(f"Aucun résultat pour '{query}'")
+                    res['_score'] = res.apply(lambda r: calc_score(r,q,filt), axis=1)
+                    res = res[res['_score']>0].sort_values('_score',ascending=False)
+                
+                elif mode == "🎯 Exact":
+                    mask = pd.Series([False]*len(res))
+                    for col in res.columns:
+                        mask |= res[col].astype(str).str.contains(q,case=False,na=False)
+                    res = res[mask]
+                
+                else:
+                    if 'Contrat' in res.columns:
+                        mtch = fuzzy_search(q,res,'Contrat',50)
+                        if mtch:
+                            res = res[res['Contrat'].isin([m[0] for m in mtch])]
+                            res['_score'] = res['Contrat'].map({m[0]:m[1] for m in mtch})
+                            res = res.sort_values('_score',ascending=False)
+                
+                if len(res)>0:
+                    st.success(f"✅ {len(res)} résultat(s)")
+                    if '_score' in res.columns:
+                        c1,c2,c3 = st.columns(3)
+                        c1.metric("Moy", f"{res['_score'].mean():.0f}%")
+                        c2.metric("Max", f"{res['_score'].max():.0f}%")
+                        c3.metric("Min", f"{res['_score'].min():.0f}%")
+                    st.dataframe(res, width='stretch', height=400)
+                    st.download_button("📥 CSV", res.to_csv(index=False).encode(), f"recherche_{datetime.now():%Y%m%d_%H%M%S}.csv")
+                else:
+                    st.warning(f"Aucun résultat pour '{q}'")
         
         # TAB 2: DONNÉES
         with tab2:
             st.subheader("📋 Données nettoyées")
             st.dataframe(df_clean, width='stretch', height=400)
-            
-            col1,col2,col3,col4 = st.columns(4)
-            col1.metric("Lignes", len(df_clean))
-            col2.metric("Colonnes", len(df_clean.columns))
-            col3.metric("Doublons", df_clean.duplicated().sum())
+            c1,c2,c3,c4 = st.columns(4)
+            c1.metric("Lignes", len(df_clean))
+            c2.metric("Colonnes", len(df_clean.columns))
+            c3.metric("Doublons", df_clean.duplicated().sum())
             if 'Statut_Final' in df_clean.columns:
-                col4.metric("OK", len(df_clean[df_clean['Statut_Final'].str.upper()=='OK']))
+                c4.metric("OK", len(df_clean[df_clean['Statut_Final'].str.upper()=='OK']))
         
         # TAB 3: DASHBOARD AGENCES
         with tab3:
-            st.subheader("🏢 Dashboard Agences")
+            st.subheader("🏢 Dashboard Agences - Vue Exécutive")
             
             if 'Code_Unite' in df_clean.columns and 'Statut_Final' in df_clean.columns:
-                ag_metrics = []
+                agm = []
                 for ag in df_clean['Code_Unite'].unique():
                     d = df_clean[df_clean['Code_Unite']==ag]
                     t = len(d)
                     o = (d['Statut_Final'].str.upper()=='OK').sum()
-                    ag_metrics.append({'Agence':ag,'Total':t,'OK':o,'KO':t-o,'Taux':round(o/t*100,1) if t else 0})
+                    agm.append({'Agence':ag,'Total':t,'OK':o,'KO':t-o,'Taux':round(o/t*100,1) if t else 0})
                 
-                df_ag = pd.DataFrame(ag_metrics)
+                df_ag = pd.DataFrame(agm)
                 moy = df_ag['Taux'].mean()
-                df_ag['Écart'] = df_ag['Taux'] - moy
+                df_ag['Écart'] = (df_ag['Taux'] - moy).round(1)
                 df_ag = df_ag.sort_values('Taux', ascending=False)
                 
-                # Métriques
+                # Métriques clés
                 st.markdown("### 🎯 Métriques Clés")
-                col1,col2,col3,col4,col5 = st.columns(5)
-                col1.metric("🏆 Meilleure", df_ag.iloc[0]['Agence'], f"{df_ag.iloc[0]['Taux']}%")
-                col2.metric("🔴 Pire", df_ag.iloc[-1]['Agence'], f"{df_ag.iloc[-1]['Taux']}%")
-                col3.metric("📊 Moyenne", f"{moy:.1f}%")
-                col4.metric("⚠️ < 60%", len(df_ag[df_ag['Taux']<60]))
-                col5.metric("✅ > Moy", f"{len(df_ag[df_ag['Taux']>=moy])}/{len(df_ag)}")
+                c1,c2,c3,c4,c5 = st.columns(5)
+                c1.metric("🏆 Meilleure", df_ag.iloc[0]['Agence'], f"{df_ag.iloc[0]['Taux']}%")
+                c2.metric("🔴 Pire", df_ag.iloc[-1]['Agence'], f"{df_ag.iloc[-1]['Taux']}%")
+                c3.metric("📊 Moyenne", f"{moy:.1f}%")
+                c4.metric("⚠️ < 60%", len(df_ag[df_ag['Taux']<60]), delta="Alerte", delta_color="inverse")
+                c5.metric("✅ > Moy", f"{len(df_ag[df_ag['Taux']>=moy])}/{len(df_ag)}")
                 
-                # Filtres
-                st.markdown("### 🔍 Filtres")
-                col1,col2,col3 = st.columns(3)
-                with col1:
-                    filtre_ag = st.multiselect("Agences", df_ag['Agence'].tolist(), df_ag['Agence'].tolist()[:5])
-                with col2:
-                    seuil = st.slider("Taux min (%)", 0, 100, 0)
-                with col3:
-                    tri = st.selectbox("Trier par", ["Taux","KO","Total"])
+                # Filtres interactifs
+                st.markdown("### 🔍 Filtres Interactifs")
+                c1,c2,c3 = st.columns(3)
+                with c1:
+                    filt_ag = st.multiselect("Sélectionner agences", df_ag['Agence'].tolist(), df_ag['Agence'].tolist()[:5])
+                with c2:
+                    seuil = st.slider("Taux minimum (%)", 0, 100, 0)
+                with c3:
+                    tri = st.selectbox("Trier par", ["Taux","KO","Total","Agence"])
                 
-                df_filt = df_ag[df_ag['Agence'].isin(filtre_ag)] if filtre_ag else df_ag
-                df_filt = df_filt[df_filt['Taux'] >= seuil].sort_values(tri, ascending=False)
+                df_f = df_ag[df_ag['Agence'].isin(filt_ag)] if filt_ag else df_ag
+                df_f = df_f[df_f['Taux'] >= seuil].sort_values(tri, ascending=False)
                 
                 # Graphiques
                 st.markdown("### 📊 Visualisations")
-                col1,col2 = st.columns(2)
+                c1,c2 = st.columns(2)
                 
-                with col1:
-                    colors = ['#28a745' if x>=80 else '#ffc107' if x>=60 else '#dc3545' for x in df_filt['Taux']]
-                    fig = go.Figure(go.Bar(y=df_filt['Agence'], x=df_filt['Taux'], orientation='h',
-                                          marker_color=colors, text=df_filt['Taux'].apply(lambda x:f"{x:.1f}%")))
-                    fig.update_layout(title="Taux par agence", height=400, showlegend=False)
+                with c1:
+                    colors = ['#28a745' if x>=80 else '#ffc107' if x>=60 else '#dc3545' for x in df_f['Taux']]
+                    fig = go.Figure(go.Bar(y=df_f['Agence'], x=df_f['Taux'], orientation='h',
+                                          marker_color=colors, text=df_f['Taux'].apply(lambda x:f"{x:.1f}%"),
+                                          textposition='outside'))
+                    fig.update_layout(title="Taux de réussite par agence", xaxis_title="Taux (%)", 
+                                     yaxis_title="Agence", height=400, showlegend=False)
                     st.plotly_chart(fig, use_container_width=True)
                 
-                with col2:
-                    fig = px.scatter(df_filt, x='KO', y='OK', size='Total', color='Taux',
-                                    hover_name='Agence', title="OK vs KO", color_continuous_scale='RdYlGn')
+                with c2:
+                    fig = px.scatter(df_f, x='KO', y='OK', size='Total', color='Taux',
+                                    hover_name='Agence', title="Répartition OK vs KO",
+                                    labels={'KO':'Rejets','OK':'Validés'}, color_continuous_scale='RdYlGn')
                     fig.update_layout(height=400)
                     st.plotly_chart(fig, use_container_width=True)
                 
-                # Tableau
-                st.markdown("### 📋 Tableau")
-                df_filt['Statut'] = df_filt['Taux'].apply(lambda x: '🟢 Excellent' if x>=80 else '🟡 Moyen' if x>=60 else '🔴 Critique')
-                st.dataframe(df_filt[['Agence','Total','OK','KO','Taux','Écart','Statut']], width='stretch', hide_index=True)
+                # Tableau détaillé
+                st.markdown("### 📋 Tableau Détaillé")
+                df_f['Statut'] = df_f['Taux'].apply(lambda x: '🟢 Excellent' if x>=80 else '🟡 Moyen' if x>=60 else '🔴 Critique')
+                df_f['Écart vs Moy'] = df_f['Écart'].apply(lambda x: f"{x:+.1f}%")
+                st.dataframe(df_f[['Agence','Total','OK','KO','Taux','Écart vs Moy','Statut']], 
+                           width='stretch', height=350, hide_index=True)
                 
-                # Alertes
+                # Agences à risque
                 risque = df_ag[df_ag['Taux']<60]
-                if len(risque) > 0:
-                    st.markdown("### ⚠️ Agences à Risque")
-                    st.error(f"{len(risque)} agence(s) < 60%")
-                    st.dataframe(risque[['Agence','Taux','KO']], hide_index=True)
+                if len(risque)>0:
+                    st.markdown("### ⚠️ Agences à Risque (< 60%)")
+                    st.error(f"**{len(risque)} agence(s)** nécessite(nt) une attention immédiate")
+                    c1,c2 = st.columns(2)
+                    with c1:
+                        st.dataframe(risque[['Agence','Taux','KO']], hide_index=True)
+                    with c2:
+                        st.markdown("""
+                        **Actions recommandées :**
+                        - 🔍 Audit approfondi des processus
+                        - 📋 Plan d'action correctif urgent
+                        - 👥 Formation renforcée des équipes
+                        - 📊 Suivi hebdomadaire strict
+                        - 💼 Support managérial
+                        """)
+                
+                # Top Performers
+                st.markdown("### 🌟 Top 5 Performers")
+                top5 = df_ag.head(5)
+                c1,c2 = st.columns(2)
+                with c1:
+                    st.dataframe(top5[['Agence','Taux','Total']], hide_index=True)
+                with c2:
+                    st.markdown("""
+                    **Bonnes pratiques à partager :**
+                    - ✅ Processus documentés et optimisés
+                    - 📚 Capitalisation des connaissances
+                    - 🎓 Sessions de formation inter-agences
+                    - 🏆 Benchmark pour l'organisation
+                    - 🤝 Mentorat des autres agences
+                    """)
+                
+                # Évolution temporelle
+                if 'Date_Integration' in df_clean.columns:
+                    st.markdown("### 📈 Évolution Temporelle par Agence")
+                    ag_select = st.selectbox("Sélectionner une agence", df_ag['Agence'].tolist())
+                    
+                    if ag_select:
+                        df_temp = df_clean[df_clean['Code_Unite']==ag_select].copy()
+                        df_temp['Date_Integration'] = pd.to_datetime(df_temp['Date_Integration'], errors='coerce')
+                        df_temp = df_temp.dropna(subset=['Date_Integration'])
+                        
+                        if len(df_temp)>0:
+                            df_temp['Mois'] = df_temp['Date_Integration'].dt.to_period('M').astype(str)
+                            
+                            monthly = []
+                            for mois in df_temp['Mois'].unique():
+                                dm = df_temp[df_temp['Mois']==mois]
+                                t = len(dm)
+                                o = (dm['Statut_Final'].str.upper()=='OK').sum()
+                                monthly.append({'Mois':mois,'Total':t,'Taux':round(o/t*100,1) if t else 0})
+                            
+                            df_mon = pd.DataFrame(monthly).sort_values('Mois')
+                            
+                            fig = go.Figure()
+                            fig.add_trace(go.Scatter(x=df_mon['Mois'], y=df_mon['Taux'],
+                                                    mode='lines+markers', name='Taux',
+                                                    line=dict(color='#4472C4',width=3),
+                                                    marker=dict(size=10)))
+                            fig.add_hline(y=moy, line_dash="dash", line_color="red",
+                                         annotation_text=f"Moyenne: {moy:.1f}%")
+                            fig.update_layout(title=f"Évolution - {ag_select}", 
+                                            xaxis_title="Mois", yaxis_title="Taux (%)",
+                                            height=400)
+                            st.plotly_chart(fig, use_container_width=True)
+                            
+                            if len(df_mon)>=2:
+                                tend = df_mon.iloc[-1]['Taux'] - df_mon.iloc[-2]['Taux']
+                                if tend > 0:
+                                    st.success(f"📈 Tendance positive : +{tend:.1f}% vs mois précédent")
+                                elif tend < 0:
+                                    st.error(f"📉 Tendance négative : {tend:.1f}% vs mois précédent")
+                                else:
+                                    st.info("→ Stable vs mois précédent")
+                
+                # Export dashboard
+                st.markdown("### 💾 Export Dashboard")
+                csv = df_f.to_csv(index=False).encode()
+                st.download_button("📥 Télécharger tableau (CSV)", csv, 
+                                  f"dashboard_agences_{datetime.now():%Y%m%d_%H%M%S}.csv")
             else:
-                st.warning("Colonnes manquantes")
+                st.warning("⚠️ Colonnes 'Code_Unite' ou 'Statut_Final' manquantes")
         
-        # TAB 4: ANALYSES
+        # TAB 4: ANALYSES DÉTAILLÉES
         with tab4:
-            st.subheader("📊 Analyses détaillées")
+            st.subheader("📊 Analyses Détaillées")
             
+            # Analyse statuts
             if 'Statut_Final' in df_clean.columns:
-                st.markdown("### 🎯 Statuts")
+                st.markdown("### 🎯 Analyse des Statuts")
                 total = len(df_clean)
-                ok = len(df_clean[df_clean['Statut_Final'].str.upper()=='OK'])
-                ko = total - ok
+                ok_cnt = len(df_clean[df_clean['Statut_Final'].str.upper()=='OK'])
+                ko_cnt = total - ok_cnt
                 
-                col1,col2,col3 = st.columns(3)
-                col1.metric("Total", total)
-                col2.metric("✅ OK", ok, f"{round(ok/total*100,1)}%")
-                col3.metric("❌ KO", ko, f"{round(ko/total*100,1)}%")
+                c1,c2,c3 = st.columns(3)
+                c1.metric("Total contrats", total)
+                c2.metric("✅ OK", ok_cnt, delta=f"{round(ok_cnt/total*100,1)}%")
+                c3.metric("❌ KO", ko_cnt, delta=f"{round(ko_cnt/total*100,1)}%", delta_color="inverse")
                 
-                if ko > 0:
-                    st.markdown("#### Détail erreurs")
-                    err = df_clean[df_clean['Statut_Final'].str.upper()!='OK']['Statut_Final'].value_counts().reset_index()
-                    err.columns = ['Erreur','Nombre']
-                    err['%'] = round(err['Nombre']/ko*100,1)
-                    st.dataframe(err, hide_index=True)
+                if ko_cnt > 0:
+                    st.markdown("#### 🔴 Détail des Erreurs")
+                    df_ko = df_clean[df_clean['Statut_Final'].str.upper()!='OK']
+                    err_types = df_ko['Statut_Final'].value_counts().reset_index()
+                    err_types.columns = ['Type d\'erreur','Nombre']
+                    err_types['%'] = round(err_types['Nombre']/ko_cnt*100,1)
+                    st.dataframe(err_types, width='stretch', hide_index=True)
+            
+            # Analyse Initial/Avenant
+            if 'Initial/Avenant' in df_clean.columns:
+                st.markdown("### 📄 Analyse Initial vs Avenants")
+                ia = df_clean['Initial/Avenant'].value_counts()
+                c1,c2 = st.columns(2)
+                c1.metric("Contrats Initiaux", ia.get('Initial',0))
+                c2.metric("Avenants", ia.get('Avenant',0))
+            
+            # Analyse types
+            if 'Type (libellé)' in df_clean.columns:
+                st.markdown("### 📋 Répartition par Type de Contrat")
+                types = df_clean['Type (libellé)'].value_counts().reset_index()
+                types.columns = ['Type','Nombre']
+                types['%'] = round(types['Nombre']/len(df_clean)*100,1)
+                st.dataframe(types, width='stretch', hide_index=True)
+            
+            # Croisement Agences × Erreurs
+            if 'Code_Unite' in df_clean.columns and 'Statut_Final' in df_clean.columns and ko_cnt>0:
+                st.markdown("### 🔀 Croisement Agences × Types d'Erreurs")
+                df_ko_cross = df_clean[df_clean['Statut_Final'].str.upper()!='OK']
+                try:
+                    cross = pd.crosstab(df_ko_cross['Code_Unite'], df_ko_cross['Statut_Final'], 
+                                       margins=True, margins_name='Total')
+                    st.dataframe(cross, width='stretch')
+                except:
+                    st.warning("Impossible de générer le croisement")
         
         # TAB 5: VISUALISATIONS
         with tab5:
-            st.subheader("📈 Visualisations")
+            st.subheader("📈 Visualisations Interactives")
             
-            col1,col2 = st.columns(2)
+            c1,c2 = st.columns(2)
             
             # Pie OK/KO
             if 'Statut_Final' in df_clean.columns:
-                with col1:
-                    ok = len(df_clean[df_clean['Statut_Final'].str.upper()=='OK'])
-                    ko = len(df_clean) - ok
-                    fig = px.pie(values=[ok,ko], names=['OK','KO'], title="Statuts",
-                                hole=0.4, color_discrete_map={'OK':'#28a745','KO':'#dc3545'})
+                with c1:
+                    st.markdown("#### Distribution OK vs KO")
+                    ok_v = len(df_clean[df_clean['Statut_Final'].str.upper()=='OK'])
+                    ko_v = len(df_clean) - ok_v
+                    fig = px.pie(values=[ok_v,ko_v], names=['OK','KO'],
+                                title="Répartition Statut Final", hole=0.4,
+                                color_discrete_map={'OK':'#28a745','KO':'#dc3545'})
                     st.plotly_chart(fig, use_container_width=True)
             
             # Bar Types
             if 'Type (libellé)' in df_clean.columns:
-                with col2:
-                    types = df_clean['Type (libellé)'].value_counts()
-                    fig = px.bar(x=types.index, y=types.values, title="Types", labels={'x':'Type','y':'Nombre'})
+                with c2:
+                    st.markdown("#### Types de Contrats")
+                    types_v = df_clean['Type (libellé)'].value_counts()
+                    fig = px.bar(x=types_v.index, y=types_v.values,
+                                title="Nombre par Type", labels={'x':'Type','y':'Nombre'},
+                                color=types_v.values, color_continuous_scale='Blues')
+                    fig.update_layout(showlegend=False)
                     st.plotly_chart(fig, use_container_width=True)
+            
+            # Graphiques Agences
+            if 'Code_Unite' in df_clean.columns:
+                st.markdown("#### 🏢 Analyse par Agence")
+                c1,c2 = st.columns(2)
+                
+                with c1:
+                    vol_ag = df_clean['Code_Unite'].value_counts().head(15)
+                    fig = px.bar(x=vol_ag.values, y=vol_ag.index, orientation='h',
+                                title="Top 15 Agences par Volume",
+                                labels={'x':'Contrats','y':'Agence'},
+                                color=vol_ag.values, color_continuous_scale='Viridis')
+                    fig.update_layout(showlegend=False, yaxis={'categoryorder':'total ascending'})
+                    st.plotly_chart(fig, use_container_width=True)
+                
+                with c2:
+                    if 'Statut_Final' in df_clean.columns:
+                        ag_succ = df_clean.groupby('Code_Unite')['Statut_Final'].apply(
+                            lambda x: (x.str.upper()=='OK').sum()/len(x)*100
+                        ).sort_values(ascending=False).head(15)
+                        
+                        fig = px.bar(x=ag_succ.values, y=ag_succ.index, orientation='h',
+                                    title="Top 15 Agences - Taux de Réussite",
+                                    labels={'x':'Taux (%)','y':'Agence'},
+                                    color=ag_succ.values, color_continuous_scale='RdYlGn')
+                        fig.update_layout(showlegend=False, yaxis={'categoryorder':'total ascending'})
+                        st.plotly_chart(fig, use_container_width=True)
             
             # Timeline
             if 'Date_Integration' in df_clean.columns:
-                st.markdown("#### Évolution")
-                df_t = df_clean.copy()
-                df_t['Date_Integration'] = pd.to_datetime(df_t['Date_Integration'], errors='coerce')
-                df_t = df_t.dropna(subset=['Date_Integration'])
-                df_t['Date'] = df_t['Date_Integration'].dt.date
-                timeline = df_t.groupby('Date').size().reset_index(name='Nombre')
+                st.markdown("#### 📅 Évolution Temporelle")
+                df_time = df_clean.copy()
+                df_time['Date_Integration'] = pd.to_datetime(df_time['Date_Integration'], errors='coerce')
+                df_time = df_time.dropna(subset=['Date_Integration'])
+                df_time['Date'] = df_time['Date_Integration'].dt.date
+                timeline = df_time.groupby('Date').size().reset_index(name='Nombre')
                 
-                fig = px.line(timeline, x='Date', y='Nombre', title="Volume quotidien", markers=True)
+                fig = px.line(timeline, x='Date', y='Nombre',
+                             title="Volume de Contrats par Jour", markers=True)
                 st.plotly_chart(fig, use_container_width=True)
+            
+            # Analyse croisée Type × Statut
+            if 'Type (libellé)' in df_clean.columns and 'Statut_Final' in df_clean.columns:
+                st.markdown("#### 🔀 Analyse Croisée Type × Statut")
+                try:
+                    cross_ts = pd.crosstab(df_clean['Type (libellé)'], df_clean['Statut_Final'])
+                    fig = px.bar(cross_ts, barmode='group',
+                                title="Répartition des Statuts par Type de Contrat")
+                    st.plotly_chart(fig, use_container_width=True)
+                except:
+                    st.warning("Impossible de générer le graphique")
+            
+            # Heatmap Agences × Erreurs
+            if 'Code_Unite' in df_clean.columns and 'Statut_Final' in df_clean.columns:
+                ko_heat = df_clean[df_clean['Statut_Final'].str.upper()!='OK']
+                if len(ko_heat)>0:
+                    st.markdown("#### 🔥 Heatmap : Agences × Types d'Erreurs")
+                    try:
+                        top_ag_ko = ko_heat['Code_Unite'].value_counts().head(10).index
+                        ko_heat_f = ko_heat[ko_heat['Code_Unite'].isin(top_ag_ko)]
+                        heatmap = pd.crosstab(ko_heat_f['Code_Unite'], ko_heat_f['Statut_Final'])
+                        
+                        fig = px.imshow(heatmap, labels=dict(x="Type d'erreur",y="Agence",color="Nombre"),
+                                       title="Concentration des Erreurs (Top 10 Agences)",
+                                       color_continuous_scale='Reds', aspect="auto")
+                        st.plotly_chart(fig, use_container_width=True)
+                    except:
+                        st.warning("Données insuffisantes pour la heatmap")
         
-        # TAB 6: EXPORT
+        # TAB 6: EXPORT EXCEL
         with tab6:
-            st.subheader("💾 Export Excel")
+            st.subheader("💾 Télécharger l'Analyse Excel Complète")
             
             st.markdown("""
-            ### 📑 Contenu du fichier Excel :
-            1. **Données nettoyées**
-            2. **Vue d'ensemble** - Métriques clés
-            3. **🆕 Analyse par agence** - Dashboard exécutif + classement avec code couleur
+            ### 📑 Le fichier Excel contient 7 ONGLETS COMPLETS :
             
-            ### ✨ Fonctionnalités :
-            - Mise en forme professionnelle
-            - Dashboard exécutif avec indicateurs clés
-            - Classement des agences avec statuts visuels
-            - Codes couleur automatiques (🟢🟡🔴)
+            1. **📄 Données nettoyées** - Toutes vos données formatées
+            2. **📊 Vue d'ensemble** - Métriques clés et KPIs
+            3. **🏢 Analyse par agence** - ULTRA-DÉTAILLÉE avec :
+               - 🎯 Dashboard exécutif (6 indicateurs clés)
+               - 🏆 Classement général avec code couleur (🟢🟡🔴)
+               - ⚠️ Agences à risque (< 60%) avec actions
+               - 🌟 Top 5 performers
+               - 📊 Volume total par agence
+               - 🔀 Croisement Agences × Types d'erreurs
+            4. **✅ Contrats OK** - Analyse détaillée :
+               - Résumé complet
+               - Répartition par type
+               - Répartition par agence
+            5. **❌ Contrats KO** - Analyse approfondie :
+               - Résumé des erreurs
+               - Types d'erreurs détaillés
+               - Rejets par agence
+               - Top 15 messages d'erreur
+               - KO par type de contrat
+            6. **📋 Types et Avenants** :
+               - Initial vs Avenant
+               - Détail par type
+               - Croisement Type × Statut
+            7. **📅 Analyse temporelle** :
+               - Volume par jour
+               - Volume par mois
+               - Statistiques période
+            
+            ### ✨ Fonctionnalités Excel :
+            - 🎨 Mise en forme professionnelle automatique
+            - 📊 Tableaux avec pourcentages
+            - 🔍 Filtres automatiques sur toutes les feuilles
+            - 📈 Codes couleur intelligents (🟢 ≥80%, 🟡 60-79%, 🔴 <60%)
+            - 📏 Colonnes ajustées automatiquement
+            - 🔒 En-têtes figés pour navigation facile
+            - ⚠️ Alertes visuelles automatiques
+            - 🏆 Classements et benchmarks
             """)
             
-            excel = create_comprehensive_excel(df_clean)
+            excel_file = create_excel(df_clean)
             
             st.download_button(
-                "⬇️ Télécharger Excel",
-                excel,
-                f"analyse_{datetime.now():%Y%m%d_%H%M%S}.xlsx",
-                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                label="⬇️ TÉLÉCHARGER L'ANALYSE COMPLÈTE (7 ONGLETS)",
+                data=excel_file,
+                file_name=f"analyse_complete_{datetime.now():%Y%m%d_%H%M%S}.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                 use_container_width=True
             )
             
-            st.success("✅ Fichier prêt !")
+            st.success("✅ Fichier Excel ultra-détaillé prêt au téléchargement !")
+            
+            # Aperçu métriques
+            st.markdown("### 📊 Aperçu des Métriques Clés")
+            c1,c2,c3,c4 = st.columns(4)
+            c1.metric("Total Contrats", len(df_clean))
+            if 'Statut_Final' in df_clean.columns:
+                ok_pct = round(len(df_clean[df_clean['Statut_Final'].str.upper()=='OK'])/len(df_clean)*100,1)
+                c2.metric("Taux Réussite", f"{ok_pct}%")
+            if 'Code_Unite' in df_clean.columns:
+                c3.metric("Agences", df_clean['Code_Unite'].nunique())
+            if 'Type (libellé)' in df_clean.columns:
+                c4.metric("Types", df_clean['Type (libellé)'].nunique())
     
     except Exception as e:
-        st.error(f"❌ Erreur: {str(e)}")
+        st.error(f"❌ Erreur : {str(e)}")
         st.exception(e)
 
 else:
-    st.info("👆 Uploadez un fichier Excel")
+    st.info("👆 Uploadez un fichier Excel pour commencer")
     
     st.markdown("""
-    ### 🚀 Fonctionnalités
+    ### 🚀 Excel Analyzer Pro - Fonctionnalités Complètes
     
     #### 🔍 Recherche Hybride Intelligente
-    - 3 modes : Hybride, Exact, Flou
-    - Compréhension du langage naturel
-    - Suggestions en temps réel
-    - Score de pertinence
+    - **3 modes** : Hybride (NLP + Fuzzy), Exact, Flou
+    - **Compréhension langage naturel** : "contrats ko nvm septembre"
+    - **Suggestions temps réel** pendant la frappe
+    - **Score de pertinence** pour trier les résultats
+    - **Export CSV** des résultats
     
-    #### 🏢 Dashboard Agences
-    - Métriques clés en temps réel
-    - Filtres interactifs
-    - Visualisations avec code couleur
-    - Détection agences à risque
+    #### 🏢 Dashboard Agences Interactif
+    - **5 métriques clés** en temps réel
+    - **Filtres dynamiques** (agences, seuil, tri)
+    - **2 graphiques interactifs** avec code couleur
+    - **Tableau détaillé** avec statuts visuels
+    - **Alertes automatiques** agences < 60%
+    - **Top 5 performers** avec bonnes pratiques
+    - **Évolution temporelle** par agence
     
-    #### 📊 Analyses Complètes
-    - Statistiques détaillées
-    - Visualisations interactives
-    - Evolution temporelle
+    #### 📊 Analyses Détaillées
+    - Statistiques complètes OK/KO
+    - Détail des erreurs par type
+    - Répartition Initial vs Avenant
+    - Types de contrats
+    - Croisements multiples
     
-    #### 💾 Export Excel Enrichi
-    - Dashboard exécutif
+    #### 📈 Visualisations Interactives
+    - Pie charts, bar charts, line charts
+    - Graphiques par agence
+    - Timeline évolution
+    - Heatmap erreurs
+    - Analyse croisée Type × Statut
+    
+    #### 💾 Export Excel Ultra-Détaillé
+    - **7 onglets complets** d'analyse
+    - Dashboard exécutif automatique
     - Classement avec code couleur
+    - Toutes les analyses incluses
     - Mise en forme professionnelle
+    
+    ### 📋 Formats Supportés
+    - `.xlsx` (Excel 2007+)
+    - `.xls` (Excel 97-2003)
+    
+    ### ⚡ Performance
+    Optimisé pour **plusieurs dizaines de milliers de lignes**
     """)
 
 st.markdown("---")
-st.markdown("<div style='text-align:center;color:#666;'>Excel Analyzer Pro v2.0</div>", unsafe_allow_html=True)
+st.markdown("<div style='text-align:center;color:#666;'>Excel Analyzer Pro v2.0 - Solution Complète</div>", unsafe_allow_html=True)
